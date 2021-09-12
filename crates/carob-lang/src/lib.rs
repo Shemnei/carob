@@ -553,7 +553,7 @@ mod token {
 	}
 
 	impl Token {
-		pub fn new(span: ByteSpan, kind: TokenKind) -> Self {
+		pub const fn new(span: ByteSpan, kind: TokenKind) -> Self {
 			Self { span, kind }
 		}
 	}
