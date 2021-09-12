@@ -17,7 +17,6 @@
 	rust_2018_idioms,
 	trivial_casts,
 	trivial_numeric_casts,
-	unsafe_code,
 	unstable_features,
 	unused_import_braces,
 	unused_qualifications,
@@ -224,6 +223,7 @@ mod span {
 }
 
 mod cursor {
+	use crate::byteutil;
 	use crate::pos::{BytePos, Pos as _};
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -235,13 +235,6 @@ mod cursor {
 	impl<'a> Cursor<'a> {
 		pub const fn new(bytes: &'a [u8]) -> Self {
 			Self { bytes, pos: 0 }
-		}
-
-		pub fn from_bytes<B>(bytes: &'a B) -> Self
-		where
-			B: 'a + AsRef<[u8]>,
-		{
-			Self::new(bytes.as_ref())
 		}
 
 		pub fn nth(&self, nth: usize) -> Option<u8> {
@@ -256,13 +249,26 @@ mod cursor {
 			self.nth(1)
 		}
 
+		pub fn third(&self) -> Option<u8> {
+			self.nth(1)
+		}
+
+		pub fn advance(&mut self, amount: usize) {
+			let amount = ::std::cmp::min(amount, self.bytes.len());
+			unsafe { self.advance_unchecked(amount) }
+		}
+
+		pub unsafe fn advance_unchecked(&mut self, amount: usize) {
+			self.pos += amount;
+			self.bytes = &self.bytes[amount..];
+		}
+
 		pub fn consume(&mut self) -> Option<u8> {
 			let consumed = self.first()?;
 
 			debug_assert_eq!(consumed, self.bytes[0]);
 
-			self.pos += 1;
-			self.bytes = &self.bytes[1..];
+			unsafe { self.advance_unchecked(1) };
 
 			Some(consumed)
 		}
@@ -278,18 +284,145 @@ mod cursor {
 			Some(())
 		}
 
+		pub fn consume_ascii_whitespace(&mut self) -> bool {
+			if matches!(self.first(), Some(b) if byteutil::is_ascii_whitespace(b)) {
+				unsafe {
+					self.advance_unchecked(1);
+				}
+
+				true
+			} else {
+				false
+			}
+		}
+
+		pub fn consume_utf8_whitespace(&mut self) -> bool {
+			self.consume_ascii_whitespace() || {
+				let width = match &self.bytes {
+					&[0xc2, 0x85, ..] | &[0xc2, 0xa0, ..] => 2,
+					&[0xe1, 0x9a, 0x80, ..]
+					| &[0xe2, 0x80, 0x80..=0x8a, ..]
+					| &[0xe2, 0x80, 0xa8 | 0xa9, ..]
+					| &[0xe2, 0x80, 0xaf, ..]
+					| &[0xe2, 0x81, 0x9f, ..]
+					| &[0xe3, 0x80, 0x80, ..] => 3,
+					_ => return false,
+				};
+
+				unsafe {
+					self.advance_unchecked(width);
+				}
+
+				true
+			}
+		}
+
 		pub fn pos(&self) -> BytePos {
 			BytePos::from_usize(self.pos)
+		}
+	}
+}
+
+mod token {
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+	pub enum TokenKind {}
+}
+
+mod byteutil {
+	pub const fn is_ascii(byte: u8) -> bool {
+		byte < 128
+	}
+
+	// https://en.wikipedia.org/wiki/Whitespace_character
+	pub const fn is_ascii_whitespace(byte: u8) -> bool {
+		matches!(byte, b'\t' | b'\n' | b'\x0B' | b'\x0C' | b'\r' | b' ')
+	}
+
+	// https://en.wikipedia.org/wiki/Ascii#Control_characters
+	pub const fn is_ascii_control(byte: u8) -> bool {
+		matches!(byte, 0..=32 | 127)
+	}
+
+	// https://en.wikipedia.org/wiki/Whitespace_character
+	pub const fn is_utf8_whitespace(value: u32) -> bool {
+		matches!(value, |0xc285| 0xc2A0 | 0xe19a80 | 0xe28080
+			..=0xe2808a | 0xe280a8 | 0xe280a9 | 0xe280af | 0xe2819f | 0xe38080)
+	}
+
+	pub const fn is_whitespace(first: u8, second: Option<u8>, third: Option<u8>) -> bool {
+		is_ascii_whitespace(first)
+			|| if let Some(second) = second {
+				let value = if let Some(third) = third {
+					u32::from_be_bytes([first, second, third, 0])
+				} else {
+					u32::from_be_bytes([first, second, 0, 0])
+				};
+				is_utf8_whitespace(value)
+			} else {
+				false
+			}
+	}
+}
+
+mod lex {
+	use crate::cursor::Cursor;
+	use crate::pos::BytePos;
+
+	pub struct Lexer<'a> {
+		cursor: Cursor<'a>,
+	}
+
+	impl<'a> Lexer<'a> {
+		pub const fn new(bytes: &'a [u8]) -> Self {
+			Self { cursor: Cursor::new(bytes) }
+		}
+
+		pub fn from_bytes<B>(bytes: &'a B) -> Self
+		where
+			B: 'a + AsRef<[u8]>,
+		{
+			Self::new(bytes.as_ref())
+		}
+
+		fn pos(&self) -> BytePos {
+			self.cursor.pos()
+		}
+
+		fn consume_utf8_whitespaces(&mut self) {
+			while self.cursor.consume_utf8_whitespace() {}
 		}
 	}
 
 	#[cfg(test)]
 	mod tests {
+		use std::time::SystemTime;
+
 		use super::*;
 
 		#[test]
-		fn new() {
-			let _cursor = Cursor::from_bytes(&"test");
+		fn consume_whitespaces() {
+			fn test_char(c: char) {
+				println!("{:?}", c);
+
+				let s = c.to_string();
+				let mut lexer = Lexer::from_bytes(&s);
+
+				lexer.consume_utf8_whitespaces();
+
+				assert_eq!(
+					lexer.pos(),
+					BytePos(s.len() as u32),
+					"Whitespace check for `{:?}` failed",
+					c
+				);
+			}
+
+			#[rustfmt::skip]
+			let content = "\t\n\u{000b}\u{000c}\r\u{0085}\u{00a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}";
+
+			let time = SystemTime::now();
+			content.chars().for_each(|c| test_char(c));
+			println!("{:?}", time.elapsed().unwrap());
 		}
 	}
 }
