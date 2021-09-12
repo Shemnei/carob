@@ -376,11 +376,6 @@ mod cursor {
 	}
 }
 
-mod token {
-	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-	pub enum TokenKind {}
-}
-
 mod byteutil {
 	pub const fn is_ascii(byte: u8) -> bool {
 		byte < 128
@@ -417,10 +412,159 @@ mod byteutil {
 	}
 }
 
+mod token {
+	use crate::span::ByteSpan;
+
+	macro_rules! tokens {
+		(
+			$(
+				$( #[doc = $doc:literal] )*
+				$name:ident,
+			)+
+		) => {
+			#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+			pub enum TokenKind {
+				$(
+					$( #[doc = $doc] )*
+					$name ,
+				)+
+				Invalid(u8),
+			}
+
+			impl TokenKind {
+				pub const fn name(&self) -> &'static str {
+					match self {
+						$( Self::$name => stringify!($name), )+
+						Self::Invalid(_) => "Invalid",
+					}
+				}
+			}
+
+			impl ::std::fmt::Display for TokenKind {
+				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+					match self {
+						$( Self::$name => f.write_str(self.name()), )+
+						Self::Invalid(byte) => write!(f, "Invalid({})", byte),
+					}
+				}
+			}
+
+			impl ::std::fmt::Binary for TokenKind {
+				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+					match self {
+						$( Self::$name => f.write_str(self.name()), )+
+						Self::Invalid(byte) => write!(f, "Invalid({:b})", byte),
+					}
+				}
+			}
+
+			impl ::std::fmt::Octal for TokenKind {
+				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+					match self {
+						$( Self::$name => f.write_str(self.name()), )+
+						Self::Invalid(byte) => write!(f, "Invalid({:o})", byte),
+					}
+				}
+			}
+
+			impl ::std::fmt::LowerHex for TokenKind {
+				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+					match self {
+						$( Self::$name => f.write_str(self.name()), )+
+						Self::Invalid(byte) => write!(f, "Invalid({:x})", byte),
+					}
+				}
+			}
+
+			impl ::std::fmt::UpperHex for TokenKind {
+				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+					match self {
+						$( Self::$name => f.write_str(self.name()), )+
+						Self::Invalid(byte) => write!(f, "Invalid({:X})", byte),
+					}
+				}
+			}
+		};
+	}
+
+	tokens! {
+		// Single byte tokens
+		/// `(`
+		LeftParen,
+		/// `)`
+		RightParen,
+		/// `{`
+		LeftBrace,
+		/// `}`
+		RightBrace,
+		/// `,`
+		Comma,
+		/// `.`
+		Dot,
+		/// `-`
+		Hyphen,
+		/// `+`
+		Plus,
+		/// `;`
+		Semicolon,
+		/// `/`
+		Slash,
+		/// `*`
+		Asterisk,
+		/// `^`
+		Caret,
+
+		// Literals
+		/// "..."
+		String,
+		/// e.g. `literal`
+		Literal,
+		/// e.g. `2`
+		Number,
+
+		// Keywords
+		/// `option`
+		Option,
+		/// `plugin`
+		Plugin,
+		/// `include`
+		Include,
+		/// `open`
+		Open,
+		/// `close`
+		Close,
+		/// `txn`
+		Transaction,
+		/// `commodity`
+		Commodity,
+		/// `price`
+		Price,
+		/// `document`
+		Document,
+
+		// End of file
+		Eof,
+	}
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+	pub struct Token {
+		span: ByteSpan,
+		kind: TokenKind,
+	}
+
+	impl Token {
+		pub fn new(span: ByteSpan, kind: TokenKind) -> Self {
+			Self { span, kind }
+		}
+	}
+}
+
 mod lex {
 	use crate::cursor::Cursor;
 	use crate::pos::BytePos;
+	use crate::token::Token;
 
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct Lexer<'a> {
 		cursor: Cursor<'a>,
 	}
@@ -435,6 +579,15 @@ mod lex {
 			B: 'a + AsRef<[u8]>,
 		{
 			Self::new(bytes.as_ref())
+		}
+
+		pub fn next_token(&mut self) -> Token {
+			// 1) Check 1 byte symbols
+			// 2) Check String start
+			// 3) Check Number start
+			// 4) Check Keywords
+			// 5) Is literal
+			todo!()
 		}
 
 		fn pos(&self) -> BytePos {
