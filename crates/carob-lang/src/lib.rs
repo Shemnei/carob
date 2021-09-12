@@ -321,6 +321,59 @@ mod cursor {
 			BytePos::from_usize(self.pos)
 		}
 	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+
+		#[test]
+		fn consume() {
+			let content = "Hello World!";
+			let mut cursor = Cursor::new(content.as_bytes());
+
+			assert_eq!(cursor.first(), Some(b'H'));
+			assert_eq!(cursor.consume(), Some(b'H'));
+
+			assert_eq!(cursor.first(), Some(b'e'));
+			assert_eq!(cursor.consume(), Some(b'e'));
+
+			assert_eq!(cursor.first(), Some(b'l'));
+			assert_eq!(cursor.consume(), Some(b'l'));
+
+			assert_eq!(cursor.first(), Some(b'l'));
+			assert_eq!(cursor.consume(), Some(b'l'));
+
+			assert_eq!(cursor.first(), Some(b'o'));
+			assert_eq!(cursor.consume(), Some(b'o'));
+
+			assert_eq!(cursor.first(), Some(b' '));
+			assert_eq!(cursor.consume(), Some(b' '));
+
+			assert_eq!(cursor.first(), Some(b'W'));
+			assert_eq!(cursor.consume(), Some(b'W'));
+
+			assert_eq!(cursor.first(), Some(b'o'));
+			assert_eq!(cursor.consume(), Some(b'o'));
+
+			assert_eq!(cursor.first(), Some(b'r'));
+			assert_eq!(cursor.consume(), Some(b'r'));
+
+			assert_eq!(cursor.first(), Some(b'l'));
+			assert_eq!(cursor.consume(), Some(b'l'));
+
+			assert_eq!(cursor.first(), Some(b'd'));
+			assert_eq!(cursor.consume(), Some(b'd'));
+
+			assert_eq!(cursor.first(), Some(b'!'));
+			assert_eq!(cursor.consume(), Some(b'!'));
+
+			assert_eq!(cursor.first(), None);
+			assert_eq!(cursor.consume(), None);
+
+			assert_eq!(cursor.first(), None);
+			assert_eq!(cursor.consume(), None);
+		}
+	}
 }
 
 mod token {
@@ -395,15 +448,11 @@ mod lex {
 
 	#[cfg(test)]
 	mod tests {
-		use std::time::SystemTime;
-
 		use super::*;
 
 		#[test]
 		fn consume_whitespaces() {
 			fn test_char(c: char) {
-				println!("{:?}", c);
-
 				let s = c.to_string();
 				let mut lexer = Lexer::from_bytes(&s);
 
@@ -420,9 +469,18 @@ mod lex {
 			#[rustfmt::skip]
 			let content = "\t\n\u{000b}\u{000c}\r\u{0085}\u{00a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}";
 
-			let time = SystemTime::now();
 			content.chars().for_each(|c| test_char(c));
-			println!("{:?}", time.elapsed().unwrap());
+
+			let mut lexer = Lexer::from_bytes(&content);
+
+			lexer.consume_utf8_whitespaces();
+
+			assert_eq!(
+				lexer.pos(),
+				BytePos(content.len() as u32),
+				"Whitespace check for `{:?}` failed",
+				content
+			);
 		}
 	}
 }
