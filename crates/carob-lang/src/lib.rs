@@ -345,7 +345,7 @@ mod byteutil {
 
 	// https://en.wikipedia.org/wiki/Whitespace_character
 	pub const fn is_utf8_whitespace(value: u32) -> bool {
-		matches!(value, |0xc285| 0xc2A0 | 0xe19a80 | 0xe28080
+		matches!(value, |0xc285| 0xc2a0 | 0xe19a80 | 0xe28080
 			..=0xe2808a | 0xe280a8 | 0xe280a9 | 0xe280af | 0xe2819f | 0xe38080)
 	}
 
