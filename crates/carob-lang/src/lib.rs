@@ -289,7 +289,7 @@ mod cursor {
 
 		#[test]
 		fn new() {
-			let cursor = Cursor::from_bytes(&"test");
+			let _cursor = Cursor::from_bytes(&"test");
 		}
 	}
 }
