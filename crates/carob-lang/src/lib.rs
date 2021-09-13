@@ -247,7 +247,7 @@ mod span {
 
 mod cursor {
 	use crate::pos::{BytePos, Pos as _};
-	use crate::util::{ascii, slice, utf8};
+	use crate::util::slice;
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct Cursor<'a> {
@@ -426,14 +426,14 @@ mod cursor {
 }
 
 pub(crate) mod util {
-	pub(crate) mod ascii {
+	pub mod ascii {
 		pub const fn is_ascii(byte: u8) -> bool {
 			byte < 128
 		}
 
 		/// # Link
 		///
-		/// https://en.wikipedia.org/wiki/Ascii#Control_characters
+		/// <https://en.wikipedia.org/wiki/Ascii#Control_characters>
 		pub const fn is_ascii_control(byte: u8) -> bool {
 			matches!(byte, 0..=32 | 127)
 		}
@@ -525,7 +525,7 @@ pub(crate) mod util {
 		}
 	}
 
-	pub(crate) mod utf8 {
+	pub mod utf8 {
 		/// Script to convert unicode value to bytes:
 		///
 		/// ```python
@@ -542,8 +542,8 @@ pub(crate) mod util {
 
 		/// # Link
 		///
-		/// https://en.wikipedia.org/wiki/Unicode_control_characters
-		pub fn is_unicode_control(value: u32) -> bool {
+		/// <https://en.wikipedia.org/wiki/Unicode_control_characters>
+		pub fn is_unicode_control(_value: u32) -> bool {
 			todo!()
 		}
 
@@ -573,22 +573,22 @@ pub(crate) mod util {
 		}
 	}
 
-	pub(crate) mod slice {
+	pub mod slice {
 		/// # Note
 		///
 		/// This does __not__ match end-of-line characters.
 		pub const fn is_any_whitespace(bytes: &[u8]) -> Option<usize> {
-			match bytes {
+			match *bytes {
 				// Ascii
-				&[b'\t' | b' ', ..] => Some(1),
+				[b'\t' | b' ', ..] => Some(1),
 				// Unicode - 2b
-				&[b'\xc2', b'\xa0', ..] => Some(2),
+				[b'\xc2', b'\xa0', ..] => Some(2),
 				// Unicode - 3b
-				&[b'\xe1', b'\x9a', b'\x80', ..]
-				| &[b'\xe2', b'\x80', b'\x80'..=b'\x8a', ..]
-				| &[b'\xe2', b'\x80', b'\xaf', ..]
-				| &[b'\xe2', b'\x81', b'\x9f', ..]
-				| &[b'\xe3', b'\x80', b'\x80', ..] => Some(3),
+				[b'\xe1', b'\x9a', b'\x80', ..]
+				| [b'\xe2', b'\x80', b'\x80'..=b'\x8a', ..]
+				| [b'\xe2', b'\x80', b'\xaf', ..]
+				| [b'\xe2', b'\x81', b'\x9f', ..]
+				| [b'\xe3', b'\x80', b'\x80', ..] => Some(3),
 				_ => None,
 			}
 		}
@@ -597,13 +597,13 @@ pub(crate) mod util {
 		///
 		/// This does __not__ match white space characters.
 		pub const fn is_any_eol(bytes: &[u8]) -> Option<usize> {
-			match bytes {
+			match *bytes {
 				// Ascii
-				&[b'\n' | b'\x0b' | b'\x0c' | b'\r', ..] => Some(1),
+				[b'\n' | b'\x0b' | b'\x0c' | b'\r', ..] => Some(1),
 				// Unicode - 2b
-				&[b'\xc2', b'\x85', ..] => Some(2),
+				[b'\xc2', b'\x85', ..] => Some(2),
 				// Unicode - 3b
-				&[b'\xe2', b'\x80', b'\xa8' | b'\xa9', ..] => Some(3),
+				[b'\xe2', b'\x80', b'\xa8' | b'\xa9', ..] => Some(3),
 				_ => None,
 			}
 		}
@@ -736,7 +736,7 @@ mod lex {
 	use crate::pos::BytePos;
 	use crate::span::ByteSpan;
 	use crate::token::{LiteralKind, Token, TokenKind};
-	use crate::util::{ascii, utf8};
+	use crate::util::ascii;
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct Lexer<'a> {
