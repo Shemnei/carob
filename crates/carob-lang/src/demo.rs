@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+	use std::ffi::OsString;
 	use std::time::SystemTime;
 
 	use crate::lex::Lexer;
@@ -7,7 +8,8 @@ mod tests {
 
 	#[test]
 	fn local_file() {
-		let path = std::env::var_os("CAROB_DEMO_PATH").unwrap();
+		let path = std::env::var_os("CAROB_DEMO_PATH")
+			.unwrap_or_else(|| OsString::from("assets/example.bean"));
 
 		let content = std::fs::read_to_string(path).unwrap();
 
