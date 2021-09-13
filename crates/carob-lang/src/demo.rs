@@ -19,7 +19,7 @@ mod tests {
 
 		loop {
 			let token = lexer.next_token();
-			//println!("[{}] {}", token.span(), token.kind().name());
+			println!("[{}] {}", token.span(), token.kind().name());
 
 			if token.kind() == &TokenKind::Eof {
 				break;

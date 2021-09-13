@@ -73,11 +73,23 @@ mod pos {
 				}
 			}
 
-			impl ::std::fmt::Display for $pos {
-				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-					::std::fmt::Display::fmt(&self.0, f)
-				}
+			macro_rules! display {
+				( $trait:path ) => {
+					impl $trait for $pos {
+						fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+							<_>::fmt(&self.0, f)
+						}
+					}
+				};
 			}
+
+			display!(::std::fmt::Display);
+			display!(::std::fmt::Binary);
+			display!(::std::fmt::Octal);
+			display!(::std::fmt::LowerHex);
+			display!(::std::fmt::UpperHex);
+			display!(::std::fmt::LowerExp);
+			display!(::std::fmt::UpperExp);
 
 			impl ::std::convert::From<u32> for $pos {
 				fn from(value: u32) -> Self {
@@ -234,8 +246,8 @@ mod span {
 }
 
 mod cursor {
-	use crate::byteutil;
 	use crate::pos::{BytePos, Pos as _};
+	use crate::util::{ascii, slice, utf8};
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct Cursor<'a> {
@@ -284,71 +296,6 @@ mod cursor {
 			Some(consumed)
 		}
 
-		pub fn consume_utf8_char(&mut self) -> Option<Result<u32, String>> {
-			// TODO: tests
-			// TODO: proper error struct
-			macro_rules! bubble {
-				( $res:expr ) => {
-					match $res {
-						Ok(x) => x,
-						Err(err) => return Some(Err(err)),
-					}
-				};
-			}
-
-			let first = self.nth(0)?;
-
-			let (len, value) = if first >= 0b01_00_0000 {
-				// Is unicode
-				let len = match first >> 4 {
-					0b1100 => 2,
-					0b1110 => 3,
-					0b1111 => 4,
-					_ => 0, // invalid length
-				};
-
-				if len < 2 {
-					// Either stepped in mid sequence or invalid utf8
-					return Some(Err(format!(
-						"Found invalid length for utf-8 unicode character `{}`",
-						len
-					)));
-				}
-
-				let mut value = (first & 0b1111) as u32;
-
-				for idx in 1..=len {
-					let byte = bubble!(self.nth(idx).ok_or_else(|| format!(
-						"Expected utf-8 unicode character with length `{}` but got eof at length \
-						 `{}`",
-						len, idx
-					)));
-
-					if byte & 0b10_00_0000 != 0b10_00_0000 {
-						return Some(Err(format!(
-							"Expected utf-8 unicode character with length `{}` but got non-utf8 \
-							 character at length `{}`",
-							len, idx
-						)));
-					}
-
-					value <<= 6;
-					value |= (byte & 0b00_11_1111) as u32;
-				}
-
-				(len, value)
-			} else {
-				// Is ascii
-				(1, first as u32)
-			};
-
-			unsafe {
-				self.advance_unchecked(len);
-			}
-
-			Some(Ok(value))
-		}
-
 		pub fn consume_while<F>(&mut self, mut f: F) -> bool
 		where
 			F: FnMut(u8) -> bool,
@@ -364,118 +311,59 @@ mod cursor {
 			true
 		}
 
-		/// # NOTE
-		///
-		/// This does __not__ consume an end-of-line character.
-		pub fn consume_ascii_whitespace_no_eol(&mut self) -> bool {
-			if matches!(self.first(), Some(b) if byteutil::is_ascii_whitespace_no_eol(b)) {
-				unsafe {
-					self.advance_unchecked(1);
+		pub fn consume_until<F>(&mut self, mut f: F) -> bool
+		where
+			F: FnMut(u8) -> bool,
+		{
+			while let Some(byte) = self.first() {
+				if !f(byte) {
+					let _ = self.consume().expect("Cursor failed to consume a valid byte");
+				} else {
+					return false;
 				}
-
-				true
-			} else {
-				false
-			}
-		}
-
-		/// # NOTE
-		///
-		/// This does consume an end-of-line character.
-		pub fn consume_ascii_whitespace(&mut self) -> bool {
-			if matches!(self.first(), Some(b) if byteutil::is_ascii_whitespace(b)) {
-				unsafe {
-					self.advance_unchecked(1);
-				}
-
-				true
-			} else {
-				false
-			}
-		}
-
-		/// # NOTE
-		///
-		/// This does __not__ consume an end-of-line character.
-		pub fn consume_utf8_whitespace_no_eol(&mut self) -> bool {
-			let width = match &self.bytes {
-				&[0xc2, 0xa0, ..] => 2,
-				&[0xe1, 0x9a, 0x80, ..]
-				| &[0xe2, 0x80, 0x80..=0x8a, ..]
-				| &[0xe2, 0x80, 0xaf, ..]
-				| &[0xe2, 0x81, 0x9f, ..]
-				| &[0xe3, 0x80, 0x80, ..] => 3,
-				_ => return false,
-			};
-
-			unsafe {
-				self.advance_unchecked(width);
 			}
 
 			true
 		}
 
-		/// # NOTE
-		///
-		/// This does consume an end-of-line character.
-		pub fn consume_utf8_whitespace(&mut self) -> bool {
-			let width = match &self.bytes {
-				&[0xc2, 0x85, ..] | &[0xc2, 0xa0, ..] => 2,
-				&[0xe1, 0x9a, 0x80, ..]
-				| &[0xe2, 0x80, 0x80..=0x8a, ..]
-				| &[0xe2, 0x80, 0xa8 | 0xa9, ..]
-				| &[0xe2, 0x80, 0xaf, ..]
-				| &[0xe2, 0x81, 0x9f, ..]
-				| &[0xe3, 0x80, 0x80, ..] => 3,
-				_ => return false,
-			};
-
-			unsafe {
-				self.advance_unchecked(width);
-			}
-
-			true
-		}
-
-		/// # NOTE
-		///
-		/// This does __not__ consume a new line character `\n` as this is a
-		/// special token.
-		pub fn consume_any_whitespace_no_eol(&mut self) -> bool {
-			self.consume_ascii_whitespace_no_eol() || self.consume_utf8_whitespace_no_eol()
-		}
-
-		/// # NOTE
-		///
-		/// This does consume a new line character `\n`.
 		pub fn consume_any_whitespace(&mut self) -> bool {
-			self.consume_ascii_whitespace() || self.consume_utf8_whitespace()
-		}
-
-		/// # NOTE
-		///
-		/// This does __not__ consume a new line character `\n` as this is a
-		/// special token.
-		pub fn consume_any_none_whitespace(&mut self) -> bool {
-			if matches!(self.first(), Some(b) if !byteutil::is_ascii_whitespace(b))
-				&& !matches!(
-					self.bytes,
-					&[0xc2, 0x85, ..]
-						| &[0xc2, 0xa0, ..] | &[0xe1, 0x9a, 0x80, ..]
-						| &[0xe2, 0x80, 0x80..=0x8a, ..]
-						| &[0xe2, 0x80, 0xa8 | 0xa9, ..]
-						| &[0xe2, 0x80, 0xaf, ..]
-						| &[0xe2, 0x81, 0x9f, ..]
-						| &[0xe3, 0x80, 0x80, ..]
-				) {
+			if let Some(width) = slice::is_any_whitespace(self.bytes) {
 				unsafe {
-					self.advance_unchecked(1);
+					self.advance_unchecked(width);
 				}
 
 				true
 			} else {
 				false
 			}
+		}
+
+		pub fn consume_any_eol(&mut self) -> bool {
+			if let Some(width) = slice::is_any_eol(self.bytes) {
+				unsafe {
+					self.advance_unchecked(width);
+				}
+
+				true
+			} else {
+				false
+			}
+		}
+
+		pub fn consume_until_whitespace_eol(&mut self) -> bool {
+			while self.first().is_some() {
+				if slice::is_any_whitespace(self.bytes).is_some()
+					|| slice::is_any_eol(self.bytes).is_some()
+				{
+					return false;
+				} else {
+					unsafe {
+						self.advance_unchecked(1);
+					}
+				}
+			}
+
+			true
 		}
 
 		pub fn pos(&self) -> BytePos {
@@ -537,85 +425,188 @@ mod cursor {
 	}
 }
 
-mod byteutil {
-	pub const fn is_ascii(byte: u8) -> bool {
-		byte < 128
+pub(crate) mod util {
+	pub(crate) mod ascii {
+		pub const fn is_ascii(byte: u8) -> bool {
+			byte < 128
+		}
+
+		/// # Link
+		///
+		/// https://en.wikipedia.org/wiki/Ascii#Control_characters
+		pub const fn is_ascii_control(byte: u8) -> bool {
+			matches!(byte, 0..=32 | 127)
+		}
+
+		/// # Note
+		///
+		/// This does __not__ match end-of-line characters.
+		///
+		/// # Link
+		///
+		/// <https://en.wikipedia.org/wiki/Whitespace_character>
+		pub const fn is_ascii_whitespace(byte: u8) -> bool {
+			matches!(byte, b'\t' | b' ')
+		}
+
+		/// # Note
+		///
+		/// This does __not__ match white space characters.
+		///
+		/// # Link
+		///
+		/// <https://en.wikipedia.org/wiki/Newline#Unicode>
+		pub const fn is_ascii_eol(byte: u8) -> bool {
+			matches!(byte, b'\n' | b'\x0b' | b'\x0c' | b'\r')
+		}
+
+		pub const fn is_ascii_quotation_mark(byte: u8) -> bool {
+			matches!(byte, b'"' | b'\'')
+		}
+
+		pub const fn get_closing_quotation_mark(byte: u8) -> Option<u8> {
+			let value = match byte {
+				b'"' => b'"',
+				b'\'' => b'\'',
+				_ => return None,
+			};
+
+			Some(value)
+		}
+
+		pub const fn is_ascii_escape(byte: u8) -> bool {
+			matches!(byte, b'\\')
+		}
+
+		pub const fn is_ascii_digit(byte: u8) -> bool {
+			matches!(byte, b'0'..=b'9')
+		}
+
+		pub const fn is_ascii_number_ignore(byte: u8) -> bool {
+			matches!(byte, b'_' | b',')
+		}
+
+		pub const fn is_ascii_number_decimal_separator(byte: u8) -> bool {
+			matches!(byte, b'.')
+		}
+
+		pub const fn is_ascii_number_sign_negative(byte: u8) -> bool {
+			matches!(byte, b'-')
+		}
+
+		pub const fn is_ascii_number_sign_positive(byte: u8) -> bool {
+			matches!(byte, b'+')
+		}
+
+		pub const fn is_ascii_number_sign(byte: u8) -> bool {
+			is_ascii_number_sign_negative(byte) || is_ascii_number_sign_positive(byte)
+		}
+
+		pub const fn is_ascii_number_exponent(byte: u8) -> bool {
+			matches!(byte, b'e' | b'E')
+		}
+
+		#[cfg(test)]
+		mod tests {
+			use super::*;
+
+			#[test]
+			fn quotation_mark_opening_has_closing() {
+				for byte in 0..255 {
+					if !is_ascii(byte) {
+						break;
+					}
+
+					if is_ascii_quotation_mark(byte) {
+						assert!(get_closing_quotation_mark(byte).is_some());
+					}
+				}
+			}
+		}
 	}
 
-	// https://en.wikipedia.org/wiki/Whitespace_character
-	/// # NOTE
-	///
-	/// This does __not__ match end-of-line characters as these are
-	/// special tokens.
-	pub const fn is_ascii_whitespace_no_eol(byte: u8) -> bool {
-		matches!(byte, b'\t' | b' ')
+	pub(crate) mod utf8 {
+		/// Script to convert unicode value to bytes:
+		///
+		/// ```python
+		/// '\u2028'.encode('utf-8')
+		/// ```
+
+		pub const fn is_unicode_start(byte: u8) -> bool {
+			matches!(byte >> 4, 0b1100 | 0b1110 | 0b1111)
+		}
+
+		pub const fn is_unicode_continuation(byte: u8) -> bool {
+			byte & 0b1100_0000 == 0b1000_0000
+		}
+
+		/// # Link
+		///
+		/// https://en.wikipedia.org/wiki/Unicode_control_characters
+		pub fn is_unicode_control(value: u32) -> bool {
+			todo!()
+		}
+
+		/// # Note
+		///
+		/// This does __not__ match end-of-line characters.
+		///
+		/// # Link
+		///
+		/// <https://en.wikipedia.org/wiki/Whitespace_character>
+		pub const fn is_unicode_whitespace(value: u32) -> bool {
+			matches!(
+				value,
+				0xc2a0 | 0xe19a80 | 0xe28080..=0xe2808a | 0xe280af | 0xe2819f | 0xe38080
+			)
+		}
+
+		/// # Note
+		///
+		/// This does __not__ match white space characters.
+		///
+		/// # Link
+		///
+		/// <https://en.wikipedia.org/wiki/Newline#Unicode>
+		pub const fn is_unicode_eol(value: u32) -> bool {
+			matches!(value, 0xc285 | 0xe280a8 | 0xe280a9)
+		}
 	}
 
-	pub const fn is_ascii_whitespace(byte: u8) -> bool {
-		is_ascii_whitespace_no_eol(byte) || matches!(byte, b'\n' | b'\x0b' | b'\x0c' | b'\r')
-	}
+	pub(crate) mod slice {
+		/// # Note
+		///
+		/// This does __not__ match end-of-line characters.
+		pub const fn is_any_whitespace(bytes: &[u8]) -> Option<usize> {
+			match bytes {
+				// Ascii
+				&[b'\t' | b' ', ..] => Some(1),
+				// Unicode - 2b
+				&[b'\xc2', b'\xa0', ..] => Some(2),
+				// Unicode - 3b
+				&[b'\xe1', b'\x9a', b'\x80', ..]
+				| &[b'\xe2', b'\x80', b'\x80'..=b'\x8a', ..]
+				| &[b'\xe2', b'\x80', b'\xaf', ..]
+				| &[b'\xe2', b'\x81', b'\x9f', ..]
+				| &[b'\xe3', b'\x80', b'\x80', ..] => Some(3),
+				_ => None,
+			}
+		}
 
-	// https://en.wikipedia.org/wiki/Ascii#Control_characters
-	pub const fn is_ascii_control(byte: u8) -> bool {
-		matches!(byte, 0..=32 | 127)
-	}
-
-	/// # NOTE
-	///
-	/// This does __not__ match end-of-line characters as these are
-	/// special tokens.
-	pub const fn is_utf8_whitespace_no_eol(value: u32) -> bool {
-		matches!(value, |0xc2a0| 0xe19a80 | 0xe28080..=0xe2808a | 0xe280af | 0xe2819f | 0xe38080)
-	}
-
-	// https://en.wikipedia.org/wiki/Whitespace_character
-	pub const fn is_utf8_whitespace(value: u32) -> bool {
-		is_utf8_whitespace_no_eol(value)
-			|| matches!(value, |0xc285| 0xc2a0 | 0xe19a80 | 0xe28080
-				..=0xe2808a | 0xe280a8 | 0xe280a9 | 0xe280af | 0xe2819f | 0xe38080)
-	}
-
-	pub const fn is_ascii_digit(byte: u8) -> bool {
-		matches!(byte, b'0'..=b'9')
-	}
-
-	pub const fn is_ascii_quotation_mark(byte: u8) -> bool {
-		// 0-9
-		matches!(byte, b'"')
-	}
-
-	pub const fn get_closing_quotation_mark(byte: u8) -> Option<u8> {
-		// 0-9
-		let closing = match byte {
-			b'"' => b'"',
-			_ => return None,
-		};
-
-		Some(closing)
-	}
-
-	pub const fn is_ascii_escape(byte: u8) -> bool {
-		matches!(byte, b'\\')
-	}
-
-	pub const fn is_ascii_number_ignore(byte: u8) -> bool {
-		matches!(byte, b'_' | b',')
-	}
-
-	pub const fn is_ascii_number_decimal_separator(byte: u8) -> bool {
-		matches!(byte, b'.')
-	}
-
-	pub const fn is_ascii_number_sign_negative(byte: u8) -> bool {
-		matches!(byte, b'-' | b'+')
-	}
-
-	pub const fn is_ascii_number_sign(byte: u8) -> bool {
-		is_ascii_number_sign_negative(byte) || matches!(byte, b'+')
-	}
-
-	pub const fn is_ascii_number_exponent(byte: u8) -> bool {
-		matches!(byte, b'e')
+		/// # Note
+		///
+		/// This does __not__ match white space characters.
+		pub const fn is_any_eol(bytes: &[u8]) -> Option<usize> {
+			match bytes {
+				// Ascii
+				&[b'\n' | b'\x0b' | b'\x0c' | b'\r', ..] => Some(1),
+				// Unicode - 2b
+				&[b'\xc2', b'\x85', ..] => Some(2),
+				// Unicode - 3b
+				&[b'\xe2', b'\x80', b'\xa8' | b'\xa9', ..] => Some(3),
+				_ => None,
+			}
+		}
 	}
 }
 
@@ -741,11 +732,11 @@ mod token {
 }
 
 mod lex {
-	use crate::byteutil;
 	use crate::cursor::Cursor;
 	use crate::pos::BytePos;
 	use crate::span::ByteSpan;
 	use crate::token::{LiteralKind, Token, TokenKind};
+	use crate::util::{ascii, utf8};
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct Lexer<'a> {
@@ -765,16 +756,21 @@ mod lex {
 		}
 
 		pub fn next_token(&mut self) -> Token {
-			self.consume_whitespaces_no_eol();
+			self.consume_whitespaces();
 
 			let start = self.cursor.pos();
+
+			// Check eol here because in the `match` the first byte is already
+			// poped and thus the cursor cant detect any eol.
+			if self.cursor.consume_any_eol() {
+				return self.emit_token(start, TokenKind::Eol);
+			}
 
 			// TODO: be able to define decimal separator
 
 			// 1) Check 1 byte symbols
 			// 2) Check String start
 			// 3) Check Number start
-			// 4) Check Keywords
 			// 5) Is literal
 			match (self.cursor.consume(), self.cursor.first()) {
 				(Some(b'('), _) => self.emit_token(start, TokenKind::LeftParen),
@@ -793,34 +789,15 @@ mod lex {
 				(Some(b'^'), _) => self.emit_token(start, TokenKind::Caret),
 				(Some(b'!'), _) => self.emit_token(start, TokenKind::ExclamationMark),
 				(Some(b'@'), _) => self.emit_token(start, TokenKind::AtSign),
-				// EOL
-				(Some(b'\n'), _) | (Some(b'\x0b'), _) | (Some(b'\x0c'), _) | (Some(b'\r'), _) => {
-					self.emit_token(start, TokenKind::Eol)
-				}
-				(Some(b'\xc2'), Some(b'\x85')) => {
-					// Consume second byte
-					unsafe {
-						self.cursor.advance_unchecked(1);
-					}
 
-					self.emit_token(start, TokenKind::Eol)
-				}
-				(Some(b'\xe2'), Some(b'\x80'))
-					if matches!(self.cursor.third(), Some(b'\xa8' | b'\xa9')) =>
-				{
-					// Consume second and third byte
-					unsafe {
-						self.cursor.advance_unchecked(2);
-					}
-
-					self.emit_token(start, TokenKind::Eol)
-				}
+				// TODO Line Comment
+				//(Some(b';'), _) => self.consume_line_comment(),
 
 				// Number
-				(Some(b), _) if byteutil::is_ascii_digit(b) => self.lex_number(start, b),
+				(Some(b), _) if ascii::is_ascii_digit(b) => self.lex_number(start, b),
 
 				// String
-				(Some(b), _) if byteutil::is_ascii_quotation_mark(b) => self.lex_string(start, b),
+				(Some(b), _) if ascii::is_ascii_quotation_mark(b) => self.lex_string(start, b),
 
 				// Identifier
 				(Some(_), _) => self.lex_ident(start),
@@ -835,47 +812,47 @@ mod lex {
 			// e.g. 1_100,000.10e-10
 			// after e no more `.`
 
-			debug_assert!(byteutil::is_ascii_digit(first));
+			debug_assert!(ascii::is_ascii_digit(first));
 
 			let mut kind = LiteralKind::Integer;
 
-			let _ = self.cursor.consume_while(|b| {
-				byteutil::is_ascii_digit(b) || byteutil::is_ascii_number_ignore(b)
-			});
+			let _ = self
+				.cursor
+				.consume_while(|b| ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b));
 
-			if matches!(self.cursor.first(), Some(b) if byteutil::is_ascii_number_decimal_separator(b))
+			if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_decimal_separator(b))
 			{
 				kind = LiteralKind::Float;
 
 				let separator = self.cursor.consume();
 				debug_assert!(
-					matches!(separator, Some(b) if byteutil::is_ascii_number_decimal_separator(b))
+					matches!(separator, Some(b) if ascii::is_ascii_number_decimal_separator(b))
 				);
 
 				let _ = self.cursor.consume_while(|b| {
-					byteutil::is_ascii_digit(b) || byteutil::is_ascii_number_ignore(b)
+					ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b)
 				});
 			}
 
-			if matches!(self.cursor.first(), Some(b) if byteutil::is_ascii_number_exponent(b))
-				|| matches!((self.cursor.first(), self.cursor.second()), (Some(a), Some(b)) if byteutil::is_ascii_number_sign(a) && byteutil::is_ascii_number_exponent(b))
+			if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_exponent(b))
+				|| matches!((self.cursor.first(), self.cursor.second()), (Some(a), Some(b)) if ascii::is_ascii_number_sign(a) && ascii::is_ascii_number_exponent(b))
 			{
 				// TODO: check that there is a digit after the exponent before consuming
-				if matches!(self.cursor.first(), Some(b) if byteutil::is_ascii_number_sign(b)) {
-					if matches!(self.cursor.first(), Some(b) if byteutil::is_ascii_number_sign_negative(b))
+				if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign(b)) {
+					if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign_negative(b))
 					{
 						kind = LiteralKind::Float;
 					}
 
 					let sign = self.cursor.consume();
-					debug_assert!(matches!(sign, Some(b) if byteutil::is_ascii_number_sign(b)));
+					debug_assert!(matches!(sign, Some(b) if ascii::is_ascii_number_sign(b)));
 				}
 
 				let exponent = self.cursor.consume();
-				debug_assert!(matches!(exponent, Some(b) if byteutil::is_ascii_number_exponent(b)));
+				debug_assert!(matches!(exponent, Some(b) if ascii::is_ascii_number_exponent(b)));
 
 				let _ = self.cursor.consume_while(|b| {
-					byteutil::is_ascii_digit(b) || byteutil::is_ascii_number_ignore(b)
+					ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b)
 				});
 			}
 
@@ -883,15 +860,15 @@ mod lex {
 		}
 
 		fn lex_string(&mut self, start: BytePos, first: u8) -> Token {
-			debug_assert!(byteutil::is_ascii_quotation_mark(first));
+			debug_assert!(ascii::is_ascii_quotation_mark(first));
 
-			let closing = byteutil::get_closing_quotation_mark(first)
-				.expect("Found no closing quotation mark");
+			let closing = ascii::get_closing_quotation_mark(first)
+				.unwrap_or_else(|| panic!("Found no closing quotation mark for `0x{:x}`", start));
 
 			let mut terminated = false;
 
 			while let Some(byte) = self.cursor.consume() {
-				if byteutil::is_ascii_escape(byte) {
+				if ascii::is_ascii_escape(byte) {
 					if self.cursor.consume().is_none() {
 						// Consume escaped byte. We dont care about utf-8 unicode
 						// as these bytes would always be than any ascii char.
@@ -907,7 +884,7 @@ mod lex {
 		}
 
 		fn lex_ident(&mut self, start: BytePos) -> Token {
-			while self.cursor.consume_any_none_whitespace() {}
+			self.cursor.consume_until_whitespace_eol();
 			self.emit_token(start, TokenKind::Ident)
 		}
 
@@ -923,8 +900,8 @@ mod lex {
 			self.cursor.pos()
 		}
 
-		fn consume_whitespaces_no_eol(&mut self) {
-			while self.cursor.consume_any_whitespace_no_eol() {}
+		fn consume_whitespaces(&mut self) {
+			while self.cursor.consume_any_whitespace() {}
 		}
 	}
 
@@ -938,7 +915,7 @@ mod lex {
 				let s = c.to_string();
 				let mut lexer = Lexer::from_bytes(&s);
 
-				lexer.consume_whitespaces_no_eol();
+				lexer.consume_whitespaces();
 
 				assert_eq!(
 					lexer.pos(),
@@ -952,7 +929,7 @@ mod lex {
 				let s = c.to_string();
 				let mut lexer = Lexer::from_bytes(&s);
 
-				lexer.consume_whitespaces_no_eol();
+				lexer.consume_whitespaces();
 
 				assert_eq!(lexer.pos(), BytePos(0), "Eol check for `{:?}` failed", c);
 			}
