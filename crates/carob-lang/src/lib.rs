@@ -29,6 +29,16 @@
 #![cfg_attr(docsrs, feature(doc_cfg), feature(doc_alias))]
 
 // TODO: decide how "far" to go with unicode (e.g. accept different unicode digits / quotation marks)
+// TODO: make something like small_str
+// TODO: add literal enum with:
+//    Strings
+//    Accounts
+//    Currency
+//    Dates (datetime.date)
+//    Tags
+//    Numbers (Decimal)
+//    Amount (beancount.core.amount.Amount)
+//    Boolean
 
 #[cfg(test)]
 mod demo;
@@ -239,6 +249,18 @@ mod span {
 					::std::ops::Bound::Excluded(&self.high)
 				}
 			}
+
+			impl ::std::convert::From<($ty, $ty)> for $span {
+				fn from((low, high): ($ty, $ty)) -> Self {
+					Self::new(low, high)
+				}
+			}
+
+			impl ::std::convert::From<::std::ops::Range<$ty>> for $span {
+				fn from(range: ::std::ops::Range<$ty>) -> Self {
+					Self::new(range.start, range.end)
+				}
+			}
 		};
 	}
 
@@ -380,8 +402,12 @@ mod cursor {
 			true
 		}
 
-		pub fn pos(&self) -> BytePos {
+		pub fn byte_pos(&self) -> BytePos {
 			BytePos::from_usize(self.pos)
+		}
+
+		pub const fn pos(&self) -> usize {
+			self.pos
 		}
 	}
 
@@ -639,7 +665,7 @@ mod token {
 		(
 			$(
 				$( #[doc = $doc:literal] )*
-				$name:ident $( { $( $tyname:ident : $ty:ty )+ } )?,
+				$name:ident $( { $( $tyname:ident : $ty:ty )+ } )? $( = $symbol:literal )?,
 			)+
 		) => {
 			#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -654,56 +680,62 @@ mod token {
 				pub const fn name(&self) -> &'static str {
 					#[allow(unused_variables)]
 					match self {
-						$( Self::$name $( { $( $tyname , )+ } )? => stringify!($name), )+
+						$( Self::$name $( { $( $tyname , )+ } )? => stringify!($name) , )+
+					}
+				}
+
+				pub const fn symbol(&self) -> Option<char> {
+					#[allow(unused_variables)]
+					match self {
+						$( Self::$name $( { $( $tyname , )+ } )? => tokens!(@nvl $( $symbol )? ) , )+
 					}
 				}
 			}
 
 			impl ::std::fmt::Display for TokenKind {
 				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-					#[allow(unused_variables)]
-					match self {
-						$( Self::$name $( { $( $tyname , )+ } )? => f.write_str(self.name()), )+
-					}
+					f.write_str(self.name())
 				}
 			}
 		};
+		(@nvl $symbol:literal) => { Some($symbol) };
+		(@nvl) => { None };
 	}
 
 	tokens! {
 		// Single byte tokens
 		/// `(`
-		LeftParen,
+		LeftParen = '(',
 		/// `)`
-		RightParen,
+		RightParen = ')',
 		/// `{`
-		LeftBrace,
+		LeftBrace = '{',
 		/// `}`
-		RightBrace,
+		RightBrace = '}',
 		/// `,`
-		Comma,
+		Comma = ',',
 		/// `.`
-		Dot,
+		Dot = '.',
 		/// `-`
-		Hyphen,
+		Hyphen = '-',
 		/// `+`
-		Plus,
+		Plus = '+',
 		/// `:`
-		Colon,
+		Colon = ':',
 		/// `;`
-		Semicolon,
+		Semicolon = ';',
 		/// `/`
-		Slash,
+		Slash = '/',
 		/// `*`
-		Asterisk,
+		Asterisk = '*',
 		/// `^`
-		Caret,
+		Caret = '^',
 		/// `!`
-		ExclamationMark,
+		ExclamationMark = '!',
 		/// `@`
-		AtSign,
+		AtSign = '@',
 		/// e.g. `\n`
-		Eol,
+		Eol = '\n',
 
 		// Identifier
 		/// In this phase everything is an identifier.
@@ -711,12 +743,12 @@ mod token {
 		Ident,
 
 		// Literals
-		Literal{ kind: LiteralKind},
+		Literal { kind: LiteralKind },
 		// CHECK: Dates, Paths, Tags, Links, boolean, Key
 		// These could also be just in the parser
 
 		// End of file
-		Eof,
+		Eof = '\0',
 
 		// Invisible
 		Whitespace,
@@ -731,6 +763,8 @@ mod token {
 		Float,
 		/// "..."
 		String { terminated: bool },
+		/// true/false
+		Boolean { value: bool },
 	}
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -756,20 +790,21 @@ mod token {
 
 mod lex {
 	use crate::cursor::Cursor;
-	use crate::pos::BytePos;
+	use crate::pos::{BytePos, Pos};
 	use crate::span::ByteSpan;
 	use crate::token::{LiteralKind, Token, TokenKind};
 	use crate::util::ascii;
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct Lexer<'a> {
+		bytes: &'a [u8],
 		cursor: Cursor<'a>,
 		emit_invisible: bool,
 	}
 
 	impl<'a> Lexer<'a> {
 		pub const fn new(bytes: &'a [u8]) -> Self {
-			Self { cursor: Cursor::new(bytes), emit_invisible: false }
+			Self { bytes, cursor: Cursor::new(bytes), emit_invisible: false }
 		}
 
 		pub fn from_bytes<B>(bytes: &'a B) -> Self
@@ -780,15 +815,15 @@ mod lex {
 		}
 
 		pub fn next_token(&mut self) -> Token {
-			let start = self.cursor.pos();
+			let start = self.cursor.byte_pos();
 
 			self.consume_whitespaces();
 
-			if self.emit_invisible && self.cursor.pos() > start {
+			if self.emit_invisible && self.cursor.byte_pos() > start {
 				return self.emit_token(start, TokenKind::Whitespace);
 			}
 
-			let start = self.cursor.pos();
+			let start = self.cursor.byte_pos();
 
 			// Check if there is a line comment next and if so consume until
 			// eol.
@@ -799,7 +834,7 @@ mod lex {
 				}
 			}
 
-			let start = self.cursor.pos();
+			let start = self.cursor.byte_pos();
 
 			// Check eol here because in the `match` the first byte is already
 			// poped and thus the cursor cant detect any eol.
@@ -923,11 +958,27 @@ mod lex {
 
 		fn lex_ident(&mut self, start: BytePos) -> Token {
 			self.cursor.consume_until_whitespace_eol();
-			self.emit_token(start, TokenKind::Ident)
+
+			// Check if boolean
+			let content = &self.bytes[start.as_usize()..self.cursor.pos()];
+
+			if content.eq_ignore_ascii_case(b"true") {
+				self.emit_token(
+					start,
+					TokenKind::Literal { kind: LiteralKind::Boolean { value: true } },
+				)
+			} else if content.eq_ignore_ascii_case(b"false") {
+				self.emit_token(
+					start,
+					TokenKind::Literal { kind: LiteralKind::Boolean { value: false } },
+				)
+			} else {
+				self.emit_token(start, TokenKind::Ident)
+			}
 		}
 
 		fn emit_token(&self, start: BytePos, kind: TokenKind) -> Token {
-			Token::new(ByteSpan::new(start, self.cursor.pos()), kind)
+			Token::new(ByteSpan::new(start, self.cursor.byte_pos()), kind)
 		}
 
 		fn emit_eof(&self, start: BytePos) -> Token {
@@ -935,7 +986,7 @@ mod lex {
 		}
 
 		fn pos(&self) -> BytePos {
-			self.cursor.pos()
+			self.cursor.byte_pos()
 		}
 
 		fn consume_whitespaces(&mut self) {
@@ -1000,12 +1051,242 @@ mod lex {
 	}
 }
 
-mod keywords {
+mod source {
+	use std::path::PathBuf;
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct Origin {
+		path: PathBuf,
+		// File from which it was included
+		parent: Option<PathBuf>,
+	}
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct Source {
+		origin: Origin,
+		content: String,
+	}
+}
+
+mod diagnostic {
+	use std::borrow::Cow;
+	use std::cmp::Ordering;
+
+	use crate::span::ByteSpan;
+
+	#[repr(u8)]
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+	pub enum Severity {
+		Bug,
+		Error,
+		Warning,
+		Note,
+		Help,
+	}
+
+	impl Severity {
+		pub const fn is_hard_error(&self) -> bool {
+			matches!(self, Self::Bug | Self::Error)
+		}
+
+		const fn to_cmp_value(self) -> u8 {
+			match self {
+				Severity::Bug => 5,
+				Severity::Error => 4,
+				Severity::Warning => 3,
+				Severity::Note => 2,
+				Severity::Help => 1,
+			}
+		}
+	}
+
+	impl PartialOrd<Self> for Severity {
+		fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+			u8::partial_cmp(&self.to_cmp_value(), &rhs.to_cmp_value())
+		}
+	}
+
+	impl Ord for Severity {
+		fn cmp(&self, rhs: &Self) -> Ordering {
+			self.partial_cmp(rhs).expect("Failed to cmp with Ord")
+		}
+	}
+
+	impl std::fmt::Display for Severity {
+		fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+			let s = match self {
+				Severity::Bug => "bug",
+				Severity::Error => "error",
+				Severity::Warning => "warning",
+				Severity::Note => "note",
+				Severity::Help => "help",
+			};
+
+			f.write_str(s)
+		}
+	}
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+	pub enum Code {}
+
+	impl Code {
+		pub fn message(&self) -> Option<&'static str> {
+			todo!()
+		}
+
+		pub fn url(&self) -> Option<&'static str> {
+			todo!()
+		}
+	}
+
+	impl std::fmt::Display for Code {
+		fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+			todo!()
+		}
+	}
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+	pub enum LabelKind {
+		Primary,
+		Secondary,
+	}
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct Label {
+		pub(crate) kind: LabelKind,
+		pub(crate) span: ByteSpan,
+		pub(crate) message: Option<Cow<'static, str>>,
+	}
+
+	impl Label {
+		pub const fn new(
+			kind: LabelKind,
+			span: ByteSpan,
+			message: Option<Cow<'static, str>>,
+		) -> Self {
+			Self { kind, span, message }
+		}
+
+		pub fn primary<S: Into<ByteSpan>>(span: S) -> Self {
+			Self::new(LabelKind::Primary, span.into(), None)
+		}
+
+		pub fn secondary<S: Into<ByteSpan>>(span: S) -> Self {
+			Self::new(LabelKind::Secondary, span.into(), None)
+		}
+
+		pub fn with_message<M: Into<Cow<'static, str>>>(mut self, message: M) -> Self {
+			self.message = Some(message.into());
+			self
+		}
+	}
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct Diagnostic {
+		pub(crate) severity: Severity,
+		pub(crate) code: Option<Code>,
+		pub(crate) message: Option<Cow<'static, str>>,
+		pub(crate) labels: Vec<Label>,
+		pub(crate) notes: Vec<Cow<'static, str>>,
+	}
+
+	impl Diagnostic {
+		pub fn new(
+			severity: Severity,
+			code: Option<Code>,
+			message: Option<Cow<'static, str>>,
+			labels: Vec<Label>,
+			notes: Vec<Cow<'static, str>>,
+		) -> Self {
+			Self { severity, code, message, labels, notes }
+		}
+
+		pub fn bug() -> Self {
+			Self::new(Severity::Bug, None, None, Vec::new(), Vec::new())
+		}
+
+		pub fn error() -> Self {
+			Self::new(Severity::Error, None, None, Vec::new(), Vec::new())
+		}
+
+		pub fn warning() -> Self {
+			Self::new(Severity::Warning, None, None, Vec::new(), Vec::new())
+		}
+
+		pub fn note() -> Self {
+			Self::new(Severity::Note, None, None, Vec::new(), Vec::new())
+		}
+
+		pub fn help() -> Self {
+			Self::new(Severity::Help, None, None, Vec::new(), Vec::new())
+		}
+
+		pub const fn with_code(mut self, code: Code) -> Self {
+			self.code = Some(code);
+			self
+		}
+
+		pub fn with_message<M: Into<Cow<'static, str>>>(mut self, message: M) -> Self {
+			self.message = Some(message.into());
+			self
+		}
+
+		pub fn with_label(mut self, label: Label) -> Self {
+			self.labels.push(label);
+			self
+		}
+
+		pub fn with_labels(mut self, labels: Vec<Label>) -> Self {
+			self.labels.extend(labels.into_iter());
+			self
+		}
+
+		pub fn with_note<N: Into<Cow<'static, str>>>(mut self, note: N) -> Self {
+			self.notes.push(note.into());
+			self
+		}
+
+		pub fn with_notes<N: Into<Cow<'static, str>>>(mut self, notes: Vec<N>) -> Self {
+			self.notes.extend(notes.into_iter().map(|n| n.into()));
+			self
+		}
+	}
+
+	mod fmt {}
+}
+
+mod session {
+	use crate::diagnostic::Diagnostic;
+	use crate::source::Source;
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct Session {
+		source: Source,
+		diagnostics: Vec<Diagnostic>,
+		failed: bool,
+	}
+
+	impl Session {
+		pub const fn new(source: Source) -> Self {
+			Self { source, diagnostics: Vec::new(), failed: false }
+		}
+
+		pub fn add_diagnositic(&mut self, diagnostic: Diagnostic) {
+			self.diagnostics.push(diagnostic)
+		}
+
+		pub fn set_failed(&mut self) {
+			self.failed = true;
+		}
+	}
+}
+
+mod keyword {
 	macro_rules! keywords {
 		(
 			$(
 				$( #[doc = $doc:literal] )*
-				$name:ident $(= $strrep:literal)?,
+				$name:ident = $strrep:literal,
 			)+
 		) => {
 			#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1015,43 +1296,461 @@ mod keywords {
 					$name ,
 				)+
 			}
+
+			impl Keyword {
+				pub fn from_str_opt(s: &str) -> ::std::option::Option<Self> {
+					match s {
+						$( $strrep => Some(Self::$name) , )+
+						_ => None,
+					}
+				}
+			}
 		};
 	}
 
 	keywords! {
 		/// `open`
-		Open,
+		Open = "open",
 		/// `close`
-		Close,
+		Close = "close",
 		/// `commodity`
-		Commodity,
+		Commodity = "commodity",
 		/// `txn`
 		Transaction = "txn",
 		/// `pushtag`
-		PushTag,
+		PushTag = "pushtag",
 		/// `poptag`
-		PopTag,
+		PopTag = "poptag",
 		/// `balance`
-		Balance,
+		Balance = "balance",
 		/// `pad`
-		Pad,
+		Pad = "pad",
 		/// `note`
-		Note,
+		Note = "note",
 		/// `document`
-		Document,
+		Document = "document",
 		/// `price`
-		Price,
+		Price = "price",
 		/// `event`
-		Event,
+		Event = "event",
 		/// `query`
-		Query,
+		Query = "query",
 		/// `custom`
-		Custom,
+		Custom = "custom",
 		/// `option`
-		Option,
+		Option = "option",
 		/// `plugin`
-		Plugin,
+		Plugin = "plugin",
 		/// `include`
-		Include,
+		Include = "include",
+	}
+}
+
+mod date {
+	use std::fmt;
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+	pub struct UncheckedDate {
+		year: i16,
+		month: u8,
+		day: u8,
+	}
+
+	impl fmt::Display for UncheckedDate {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			write!(f, "{}-{}-{}", self.year, self.month, self.day)
+		}
+	}
+}
+
+mod path {
+	use std::fmt;
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct UncheckedPath {
+		segments: Vec<String>,
+	}
+
+	impl fmt::Display for UncheckedPath {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			f.write_str(self.segments.join(":").as_str())
+		}
+	}
+}
+
+mod commodity {
+	use std::fmt;
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct UncheckedCommodity(String);
+
+	impl fmt::Display for UncheckedCommodity {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			f.write_str(&self.0)
+		}
+	}
+}
+
+mod payee {
+	use std::fmt;
+
+	use crate::path::UncheckedPath;
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub enum UncheckedPayee {
+		String(String),
+		Path(UncheckedPath),
+	}
+
+	impl fmt::Display for UncheckedPayee {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			match self {
+				Self::String(s) => f.write_str(s),
+				Self::Path(p) => fmt::Display::fmt(p, f),
+			}
+		}
+	}
+}
+
+mod amount {
+	use std::fmt;
+
+	use crate::commodity::UncheckedCommodity;
+
+	#[derive(Debug, Clone, PartialEq)]
+	pub struct UncheckedAmount {
+		// TODO: Use BigF/f64/i64 enum
+		value: f64,
+		commodity: UncheckedCommodity,
+	}
+
+	impl fmt::Display for UncheckedAmount {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			write!(f, "{} {}", self.value, self.commodity)
+		}
+	}
+}
+
+mod transaction {
+	use std::fmt;
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+	pub enum Flag {
+		Completed,
+		Incomplete,
+	}
+
+	impl Flag {
+		pub const fn symbol(&self) -> char {
+			match self {
+				Self::Completed => '*',
+				Self::Incomplete => '!',
+			}
+		}
+	}
+
+	impl Default for Flag {
+		fn default() -> Self {
+			Self::Completed
+		}
+	}
+
+	impl fmt::Display for Flag {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			f.write_str(self.symbol().to_string().as_str())
+		}
+	}
+}
+
+mod metadata {
+	use std::fmt;
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct Tag(String);
+
+	impl fmt::Display for Tag {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			f.write_str(&self.0)
+		}
+	}
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct Link(String);
+
+	impl fmt::Display for Link {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			f.write_str(&self.0)
+		}
+	}
+
+	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+	pub struct Attribute {
+		key: String,
+		value: String,
+	}
+
+	impl fmt::Display for Attribute {
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			write!(f, "{}: {}", self.key, self.value)
+		}
+	}
+}
+
+mod directive {
+	use std::path::PathBuf;
+
+	use crate::amount::UncheckedAmount;
+	use crate::commodity::UncheckedCommodity;
+	use crate::date::UncheckedDate;
+	use crate::keyword::Keyword;
+	use crate::metadata::Tag;
+	use crate::path::UncheckedPath;
+	use crate::payee::UncheckedPayee;
+	use crate::span::ByteSpan;
+	use crate::transaction::Flag;
+
+	macro_rules! directives {
+		(
+			$(
+				$( #[doc = $doc:literal] )*
+				$name:ident {
+					$(
+						$( #[doc = $attrdoc:literal] )*
+						$attrname:ident: $attrty:ty ,
+					)+
+				} $( : $keyword:path )? ,
+			)+
+		) => {
+			#[derive(Debug, Clone, PartialEq)]
+			pub enum DirectiveKind {
+				$(
+					$( #[doc = $doc] )*
+					$name {
+						$(
+							$( #[doc = $attrdoc] )*
+							$attrname: $attrty ,
+						)+
+					},
+				)+
+			}
+
+			impl DirectiveKind {
+				pub const fn name(&self) -> &'static str {
+					match self {
+						$( Self::$name { .. }  => stringify!($name) , )+
+					}
+				}
+
+				pub const fn keyword(&self) -> Option<Keyword> {
+					match self {
+						$( Self::$name { .. }  =>  directives!(@key $( $keyword )? ) , )+
+					}
+				}
+			}
+
+			impl ::std::fmt::Display for DirectiveKind {
+				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+					f.write_str(self.name())
+				}
+			}
+		};
+		(@key $keyword:path) => { Some($keyword) };
+		(@key ) => { None };
+	}
+
+	directives! {
+		/// `yyyy-mm-dd open SEGMENT:SEGMENT`
+		Open {
+			date: UncheckedDate,
+			account: UncheckedPath,
+			commodity_constraints: Vec<UncheckedCommodity>,
+			booking_method: Option<String>,
+		} : Keyword::Open,
+
+		/// `close`
+		Close {
+			date: UncheckedDate,
+			account: UncheckedPath,
+		} : Keyword::Close,
+
+		/// `commodity`
+		Commodity {
+			date: UncheckedDate,
+			commodity: UncheckedCommodity,
+		} : Keyword::Commodity,
+
+		/// postings of a Transaction
+		Posting {
+			flag: Flag,
+			account: UncheckedPath,
+			amount: Option<UncheckedAmount>,
+			// TODO: `{cost}`
+			// TODO: `@ price`
+		},
+
+		/// `txn`
+		Transaction {
+			date: UncheckedDate,
+			flag: Flag,
+			payee: Option<UncheckedPayee>,
+			description: Option<String>,
+			postings: Vec<Directive>,
+		} : Keyword::Transaction,
+
+		/// `pushtag`
+		PushTag {
+			tag: Tag,
+		} : Keyword::PushTag,
+
+		/// `poptag`
+		PopTag {
+			tag: Tag,
+		} : Keyword::PopTag,
+
+		/// `balance`
+		Balance {
+			date: UncheckedDate,
+			account: UncheckedPath,
+			amount: UncheckedAmount,
+		} : Keyword::Balance,
+
+		/// `pad`
+		Pad {
+			date: UncheckedDate,
+			dst_account: UncheckedPath,
+			src_account: UncheckedPath,
+		} : Keyword::Pad,
+
+		/// `note`
+		Note {
+			date: UncheckedDate,
+			account: UncheckedPath,
+			description: String,
+		} : Keyword::Note,
+
+		/// `document`
+		Document {
+			date: UncheckedDate,
+			account: UncheckedPath,
+			document_path: PathBuf,
+		} : Keyword::Document,
+
+		/// `price`
+		Price {
+			date: UncheckedDate,
+			commodity: UncheckedCommodity,
+			price: UncheckedAmount,
+		} : Keyword::Price,
+
+		/// `event`
+		Event {
+			date: UncheckedDate,
+			name: String,
+			value: String,
+		} : Keyword::Event,
+
+		/// `query`
+		Query {
+			date: UncheckedDate,
+			name: String,
+			query: String,
+		} : Keyword::Query,
+
+		/// `custom`
+		Custom {
+			date: UncheckedDate,
+			typ: String,
+			// TODO: Vec<Literal>
+		} : Keyword::Custom,
+
+		/// `option`
+		Option {
+			name: String,
+			value: String,
+		} : Keyword::Option,
+
+		/// `plugin`
+		Plugin {
+			name: String,
+			configuration: Option<String>,
+		} : Keyword::Plugin,
+
+		/// `include`
+		Include {
+			path: PathBuf,
+		} : Keyword::Include,
+	}
+
+	#[derive(Debug, Clone, PartialEq)]
+	pub struct Directive {
+		span: ByteSpan,
+		kind: DirectiveKind,
+		// TODO: bundle the bellow in Metadata
+		// TODO: attributes: AttributeMap,
+		// TODO: tags: TagSet,
+		// TODO: links: LinkSet,
+	}
+
+	impl Directive {
+		pub const fn new(span: ByteSpan, kind: DirectiveKind) -> Self {
+			Self { span, kind }
+		}
+
+		pub const fn span(&self) -> &ByteSpan {
+			&self.span
+		}
+
+		pub const fn kind(&self) -> &DirectiveKind {
+			&self.kind
+		}
+	}
+}
+
+mod parse {
+	use crate::diagnostic::Diagnostic;
+	use crate::directive::Directive;
+	use crate::session::Session;
+
+	type Result<T, E = Diagnostic> = std::result::Result<T, E>;
+
+	pub struct Parser {
+		session: Session,
+	}
+
+	impl Parser {
+		pub fn next_directive(&mut self) -> Option<Directive> {
+			loop {
+				match self.parse_top_level_directive()? {
+					Ok(directive) => return Some(directive),
+					Err(diagnostic) => {
+						self.emit_diagnostic(diagnostic);
+						self.recover();
+					}
+				}
+			}
+		}
+
+		// Allowed: Destructors can not be const
+		#[allow(clippy::missing_const_for_fn)]
+		pub fn into_session(self) -> Session {
+			self.session
+		}
+
+		fn emit_diagnostic(&mut self, diagnostic: Diagnostic) {
+			if diagnostic.severity.is_hard_error() {
+				self.session.set_failed();
+			}
+
+			self.session.add_diagnositic(diagnostic);
+		}
+
+		fn recover(&mut self) {
+			// Skip to tokens `Eol` followed by `Date`
+			todo!()
+		}
+
+		fn parse_top_level_directive(&mut self) -> Option<Result<Directive>> {
+			todo!()
+		}
 	}
 }
