@@ -29,7 +29,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg), feature(doc_alias))]
 
 // TODO: decide how "far" to go with unicode (e.g. accept different unicode digits / quotation marks)
-// TODO: decide if lexer should emit tokens for whitespaces / comments
 
 #[cfg(test)]
 mod demo;
@@ -719,8 +718,9 @@ mod token {
 		// End of file
 		Eof,
 
-		// Unknown
-		Unknown,
+		// Invisible
+		Whitespace,
+		Comment,
 	}
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -779,15 +779,20 @@ mod lex {
 		}
 
 		pub fn next_token(&mut self) -> Token {
+			let start = self.cursor.pos();
+
 			self.consume_whitespaces();
+
+			if self.cursor.pos() > start {
+				return self.emit_token(start, TokenKind::Whitespace);
+			}
 
 			// Check if there is a line comment next and if so consume until
 			// eol.
 			if matches!(self.cursor.first(), Some(b';')) {
 				self.cursor.consume_until_eol();
+				return self.emit_token(start, TokenKind::Comment);
 			}
-
-			let start = self.cursor.pos();
 
 			// Check eol here because in the `match` the first byte is already
 			// poped and thus the cursor cant detect any eol.
