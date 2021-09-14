@@ -29,6 +29,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg), feature(doc_alias))]
 
 // TODO: decide how "far" to go with unicode (e.g. accept different unicode digits / quotation marks)
+// TODO: decide if lexer should emit tokens for whitespaces / comments
 
 #[cfg(test)]
 mod demo;
@@ -350,6 +351,20 @@ mod cursor {
 			}
 		}
 
+		pub fn consume_until_eol(&mut self) -> bool {
+			while self.first().is_some() {
+				if slice::is_any_eol(self.bytes).is_some() {
+					return false;
+				} else {
+					unsafe {
+						self.advance_unchecked(1);
+					}
+				}
+			}
+
+			true
+		}
+
 		pub fn consume_until_whitespace_eol(&mut self) -> bool {
 			while self.first().is_some() {
 				if slice::is_any_whitespace(self.bytes).is_some()
@@ -531,6 +546,14 @@ pub(crate) mod util {
 		/// ```python
 		/// '\u2028'.encode('utf-8')
 		/// ```
+
+		pub const fn unicode_len(byte: u8) -> Option<usize> {
+			if is_unicode_start(byte) {
+				Some((byte >> 4).count_ones() as usize)
+			} else {
+				None
+			}
+		}
 
 		pub const fn is_unicode_start(byte: u8) -> bool {
 			matches!(byte >> 4, 0b1100 | 0b1110 | 0b1111)
@@ -758,6 +781,12 @@ mod lex {
 		pub fn next_token(&mut self) -> Token {
 			self.consume_whitespaces();
 
+			// Check if there is a line comment next and if so consume until
+			// eol.
+			if matches!(self.cursor.first(), Some(b';')) {
+				self.cursor.consume_until_eol();
+			}
+
 			let start = self.cursor.pos();
 
 			// Check eol here because in the `match` the first byte is already
@@ -789,9 +818,6 @@ mod lex {
 				(Some(b'^'), _) => self.emit_token(start, TokenKind::Caret),
 				(Some(b'!'), _) => self.emit_token(start, TokenKind::ExclamationMark),
 				(Some(b'@'), _) => self.emit_token(start, TokenKind::AtSign),
-
-				// TODO Line Comment
-				//(Some(b';'), _) => self.consume_line_comment(),
 
 				// Number
 				(Some(b), _) if ascii::is_ascii_digit(b) => self.lex_number(start, b),
