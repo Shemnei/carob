@@ -764,11 +764,12 @@ mod lex {
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct Lexer<'a> {
 		cursor: Cursor<'a>,
+		emit_invisible: bool,
 	}
 
 	impl<'a> Lexer<'a> {
 		pub const fn new(bytes: &'a [u8]) -> Self {
-			Self { cursor: Cursor::new(bytes) }
+			Self { cursor: Cursor::new(bytes), emit_invisible: false }
 		}
 
 		pub fn from_bytes<B>(bytes: &'a B) -> Self
@@ -783,16 +784,22 @@ mod lex {
 
 			self.consume_whitespaces();
 
-			if self.cursor.pos() > start {
+			if self.emit_invisible && self.cursor.pos() > start {
 				return self.emit_token(start, TokenKind::Whitespace);
 			}
+
+			let start = self.cursor.pos();
 
 			// Check if there is a line comment next and if so consume until
 			// eol.
 			if matches!(self.cursor.first(), Some(b';')) {
 				self.cursor.consume_until_eol();
-				return self.emit_token(start, TokenKind::Comment);
+				if self.emit_invisible {
+					return self.emit_token(start, TokenKind::Comment);
+				}
 			}
+
+			let start = self.cursor.pos();
 
 			// Check eol here because in the `match` the first byte is already
 			// poped and thus the cursor cant detect any eol.
