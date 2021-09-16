@@ -39,6 +39,14 @@
 //    Numbers (Decimal)
 //    Amount (beancount.core.amount.Amount)
 //    Boolean
+// TODO: intern all literals as they may appear often
+// TODO: be able to define decimal separator
+
+// FEATURE STOP
+// TODO: split into files
+// TODO: switch from byte cursor to char cursor for Lexer
+// TODO: Parser should emit Directives (statement)
+// TODO: There soulde also be types (e.g. date)
 
 #[cfg(test)]
 mod demo;
@@ -133,12 +141,13 @@ mod pos {
 mod span {
 	use std::ops::Range;
 
-	use crate::pos::BytePos;
+	use crate::pos::{BytePos, Pos as _};
 
 	pub type OffsetWidth = i32;
 
 	pub trait Span {
 		type Pos: crate::pos::Pos;
+		type IdxOutput: ?Sized;
 
 		fn with_low(&self, low: Self::Pos) -> Self;
 		fn with_high(&self, high: Self::Pos) -> Self;
@@ -149,11 +158,15 @@ mod span {
 
 		fn union(&self, other: &Self) -> Self;
 
+		fn len(&self) -> usize;
+
+		fn index<'a>(&self, s: &'a str) -> &'a Self::IdxOutput;
+
 		fn as_range(&self) -> Range<usize>;
 	}
 
 	macro_rules! span {
-		( struct $span:ident ( $ty:ty )) => {
+		( struct $span:ident ( $ty:ty : $idxo:ty )) => {
 			#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 			pub struct $span {
 				pub(crate) low: $ty,
@@ -179,6 +192,7 @@ mod span {
 			}
 
 			impl $crate::span::Span for $span {
+				type IdxOutput = $idxo;
 				type Pos = $ty;
 
 				fn with_low(&self, low: <Self as $crate::span::Span>::Pos) -> Self {
@@ -226,6 +240,14 @@ mod span {
 					Self { low, high }
 				}
 
+				fn len(&self) -> usize {
+					self.high.as_usize() - self.low.as_usize()
+				}
+
+				fn index<'a>(&self, s: &'a str) -> &'a <Self as $crate::span::Span>::IdxOutput {
+					&s[self.low.as_usize()..self.high.as_usize()]
+				}
+
 				fn as_range(&self) -> ::std::ops::Range<usize> {
 					::std::ops::Range {
 						start: $crate::pos::Pos::as_usize(&self.low),
@@ -264,205 +286,7 @@ mod span {
 		};
 	}
 
-	span!(struct ByteSpan(BytePos));
-}
-
-mod cursor {
-	use crate::pos::{BytePos, Pos as _};
-	use crate::util::slice;
-
-	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-	pub struct Cursor<'a> {
-		bytes: &'a [u8],
-		pos: usize,
-	}
-
-	impl<'a> Cursor<'a> {
-		pub const fn new(bytes: &'a [u8]) -> Self {
-			Self { bytes, pos: 0 }
-		}
-
-		pub fn nth(&self, nth: usize) -> Option<u8> {
-			(nth < self.bytes.len()).then(|| self.bytes[nth])
-		}
-
-		pub fn first(&self) -> Option<u8> {
-			self.nth(0)
-		}
-
-		pub fn second(&self) -> Option<u8> {
-			self.nth(1)
-		}
-
-		pub fn third(&self) -> Option<u8> {
-			self.nth(1)
-		}
-
-		pub fn advance(&mut self, amount: usize) {
-			let amount = ::std::cmp::min(amount, self.bytes.len());
-			unsafe { self.advance_unchecked(amount) }
-		}
-
-		pub unsafe fn advance_unchecked(&mut self, amount: usize) {
-			self.pos += amount;
-			self.bytes = &self.bytes[amount..];
-		}
-
-		pub fn consume(&mut self) -> Option<u8> {
-			let consumed = self.first()?;
-
-			debug_assert_eq!(consumed, self.bytes[0]);
-
-			unsafe { self.advance_unchecked(1) };
-
-			Some(consumed)
-		}
-
-		pub fn consume_while<F>(&mut self, mut f: F) -> bool
-		where
-			F: FnMut(u8) -> bool,
-		{
-			while let Some(byte) = self.first() {
-				if f(byte) {
-					let _ = self.consume().expect("Cursor failed to consume a valid byte");
-				} else {
-					return false;
-				}
-			}
-
-			true
-		}
-
-		pub fn consume_until<F>(&mut self, mut f: F) -> bool
-		where
-			F: FnMut(u8) -> bool,
-		{
-			while let Some(byte) = self.first() {
-				if !f(byte) {
-					let _ = self.consume().expect("Cursor failed to consume a valid byte");
-				} else {
-					return false;
-				}
-			}
-
-			true
-		}
-
-		pub fn consume_any_whitespace(&mut self) -> bool {
-			if let Some(width) = slice::is_any_whitespace(self.bytes) {
-				unsafe {
-					self.advance_unchecked(width);
-				}
-
-				true
-			} else {
-				false
-			}
-		}
-
-		pub fn consume_any_eol(&mut self) -> bool {
-			if let Some(width) = slice::is_any_eol(self.bytes) {
-				unsafe {
-					self.advance_unchecked(width);
-				}
-
-				true
-			} else {
-				false
-			}
-		}
-
-		pub fn consume_until_eol(&mut self) -> bool {
-			while self.first().is_some() {
-				if slice::is_any_eol(self.bytes).is_some() {
-					return false;
-				} else {
-					unsafe {
-						self.advance_unchecked(1);
-					}
-				}
-			}
-
-			true
-		}
-
-		pub fn consume_until_whitespace_eol(&mut self) -> bool {
-			while self.first().is_some() {
-				if slice::is_any_whitespace(self.bytes).is_some()
-					|| slice::is_any_eol(self.bytes).is_some()
-				{
-					return false;
-				} else {
-					unsafe {
-						self.advance_unchecked(1);
-					}
-				}
-			}
-
-			true
-		}
-
-		pub fn byte_pos(&self) -> BytePos {
-			BytePos::from_usize(self.pos)
-		}
-
-		pub const fn pos(&self) -> usize {
-			self.pos
-		}
-	}
-
-	#[cfg(test)]
-	mod tests {
-		use super::*;
-
-		#[test]
-		fn consume() {
-			let content = "Hello World!";
-			let mut cursor = Cursor::new(content.as_bytes());
-
-			assert_eq!(cursor.first(), Some(b'H'));
-			assert_eq!(cursor.consume(), Some(b'H'));
-
-			assert_eq!(cursor.first(), Some(b'e'));
-			assert_eq!(cursor.consume(), Some(b'e'));
-
-			assert_eq!(cursor.first(), Some(b'l'));
-			assert_eq!(cursor.consume(), Some(b'l'));
-
-			assert_eq!(cursor.first(), Some(b'l'));
-			assert_eq!(cursor.consume(), Some(b'l'));
-
-			assert_eq!(cursor.first(), Some(b'o'));
-			assert_eq!(cursor.consume(), Some(b'o'));
-
-			assert_eq!(cursor.first(), Some(b' '));
-			assert_eq!(cursor.consume(), Some(b' '));
-
-			assert_eq!(cursor.first(), Some(b'W'));
-			assert_eq!(cursor.consume(), Some(b'W'));
-
-			assert_eq!(cursor.first(), Some(b'o'));
-			assert_eq!(cursor.consume(), Some(b'o'));
-
-			assert_eq!(cursor.first(), Some(b'r'));
-			assert_eq!(cursor.consume(), Some(b'r'));
-
-			assert_eq!(cursor.first(), Some(b'l'));
-			assert_eq!(cursor.consume(), Some(b'l'));
-
-			assert_eq!(cursor.first(), Some(b'd'));
-			assert_eq!(cursor.consume(), Some(b'd'));
-
-			assert_eq!(cursor.first(), Some(b'!'));
-			assert_eq!(cursor.consume(), Some(b'!'));
-
-			assert_eq!(cursor.first(), None);
-			assert_eq!(cursor.consume(), None);
-
-			assert_eq!(cursor.first(), None);
-			assert_eq!(cursor.consume(), None);
-		}
-	}
+	span!(struct ByteSpan(BytePos : str));
 }
 
 pub(crate) mod util {
@@ -755,6 +579,20 @@ mod token {
 		Comment,
 	}
 
+	impl TokenKind {
+		pub fn literal(kind: LiteralKind) -> Self {
+			Self::Literal { kind }
+		}
+
+		pub const fn kind_str(&self) -> &str {
+			if let Self::Literal { kind } = self {
+				kind.name()
+			} else {
+				self.name()
+			}
+		}
+	}
+
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 	pub enum LiteralKind {
 		/// e.g. `2`
@@ -767,10 +605,21 @@ mod token {
 		Boolean { value: bool },
 	}
 
+	impl LiteralKind {
+		pub const fn name(&self) -> &'static str {
+			match self {
+				LiteralKind::Integer => "Integer",
+				LiteralKind::Float => "Float",
+				LiteralKind::String { .. } => "String",
+				LiteralKind::Boolean { .. } => "Boolean",
+			}
+		}
+	}
+
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 	pub struct Token {
-		span: ByteSpan,
-		kind: TokenKind,
+		pub(crate) span: ByteSpan,
+		pub(crate) kind: TokenKind,
 	}
 
 	impl Token {
@@ -789,11 +638,228 @@ mod token {
 }
 
 mod lex {
-	use crate::cursor::Cursor;
-	use crate::pos::{BytePos, Pos};
+	use self::cursor::Cursor;
+	use crate::pos::{BytePos, Pos as _};
 	use crate::span::ByteSpan;
 	use crate::token::{LiteralKind, Token, TokenKind};
 	use crate::util::ascii;
+
+	mod cursor {
+		use crate::pos::{BytePos, Pos as _};
+		use crate::util::slice;
+
+		#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+		pub struct Cursor<'a> {
+			bytes: &'a [u8],
+			pos: usize,
+		}
+
+		impl<'a> Cursor<'a> {
+			pub const fn new(bytes: &'a [u8]) -> Self {
+				Self { bytes, pos: 0 }
+			}
+
+			pub fn nth(&self, nth: usize) -> Option<u8> {
+				(nth < self.bytes.len()).then(|| self.bytes[nth])
+			}
+
+			pub fn first(&self) -> Option<u8> {
+				self.nth(0)
+			}
+
+			pub fn second(&self) -> Option<u8> {
+				self.nth(1)
+			}
+
+			pub fn third(&self) -> Option<u8> {
+				self.nth(1)
+			}
+
+			pub fn advance(&mut self, amount: usize) {
+				let amount = ::std::cmp::min(amount, self.bytes.len());
+
+				unsafe {
+					self.advance_unchecked(amount);
+				}
+			}
+
+			pub unsafe fn advance_unchecked(&mut self, amount: usize) {
+				debug_assert!(amount <= self.bytes.len());
+
+				self.pos += amount;
+				self.bytes = &self.bytes[amount..];
+			}
+
+			pub fn consume(&mut self) -> Option<u8> {
+				let consumed = self.first()?;
+
+				debug_assert_eq!(consumed, self.bytes[0]);
+
+				unsafe { self.advance_unchecked(1) };
+
+				Some(consumed)
+			}
+
+			pub fn consume_while<F>(&mut self, mut f: F) -> bool
+			where
+				F: FnMut(u8) -> bool,
+			{
+				while let Some(byte) = self.first() {
+					if f(byte) {
+						let _ = self.consume().expect("Cursor failed to consume a valid byte");
+					} else {
+						return false;
+					}
+				}
+
+				true
+			}
+
+			pub fn consume_while_eol(&mut self) -> bool {
+				while self.first().is_some() {
+					if let Some(width) = slice::is_any_eol(self.bytes) {
+						unsafe {
+							self.advance_unchecked(width);
+						}
+					} else {
+						break;
+					}
+				}
+
+				true
+			}
+
+			pub fn consume_until<F>(&mut self, mut f: F) -> bool
+			where
+				F: FnMut(u8) -> bool,
+			{
+				while let Some(byte) = self.first() {
+					if !f(byte) {
+						let _ = self.consume().expect("Cursor failed to consume a valid byte");
+					} else {
+						return false;
+					}
+				}
+
+				true
+			}
+
+			pub fn consume_any_whitespace(&mut self) -> bool {
+				if let Some(width) = slice::is_any_whitespace(self.bytes) {
+					unsafe {
+						self.advance_unchecked(width);
+					}
+
+					true
+				} else {
+					false
+				}
+			}
+
+			pub fn consume_any_eol(&mut self) -> bool {
+				if let Some(width) = slice::is_any_eol(self.bytes) {
+					unsafe {
+						self.advance_unchecked(width);
+					}
+
+					true
+				} else {
+					false
+				}
+			}
+
+			pub fn consume_until_eol(&mut self) -> bool {
+				while self.first().is_some() {
+					if slice::is_any_eol(self.bytes).is_some() {
+						return false;
+					} else {
+						unsafe {
+							self.advance_unchecked(1);
+						}
+					}
+				}
+
+				true
+			}
+
+			pub fn consume_until_whitespace_eol(&mut self) -> bool {
+				while self.first().is_some() {
+					if slice::is_any_whitespace(self.bytes).is_some()
+						|| slice::is_any_eol(self.bytes).is_some()
+					{
+						return false;
+					} else {
+						unsafe {
+							self.advance_unchecked(1);
+						}
+					}
+				}
+
+				true
+			}
+
+			pub fn byte_pos(&self) -> BytePos {
+				BytePos::from_usize(self.pos)
+			}
+
+			pub const fn pos(&self) -> usize {
+				self.pos
+			}
+		}
+
+		#[cfg(test)]
+		mod tests {
+			use super::*;
+
+			#[test]
+			fn consume() {
+				let content = "Hello World!";
+				let mut cursor = Cursor::new(content.as_bytes());
+
+				assert_eq!(cursor.first(), Some(b'H'));
+				assert_eq!(cursor.consume(), Some(b'H'));
+
+				assert_eq!(cursor.first(), Some(b'e'));
+				assert_eq!(cursor.consume(), Some(b'e'));
+
+				assert_eq!(cursor.first(), Some(b'l'));
+				assert_eq!(cursor.consume(), Some(b'l'));
+
+				assert_eq!(cursor.first(), Some(b'l'));
+				assert_eq!(cursor.consume(), Some(b'l'));
+
+				assert_eq!(cursor.first(), Some(b'o'));
+				assert_eq!(cursor.consume(), Some(b'o'));
+
+				assert_eq!(cursor.first(), Some(b' '));
+				assert_eq!(cursor.consume(), Some(b' '));
+
+				assert_eq!(cursor.first(), Some(b'W'));
+				assert_eq!(cursor.consume(), Some(b'W'));
+
+				assert_eq!(cursor.first(), Some(b'o'));
+				assert_eq!(cursor.consume(), Some(b'o'));
+
+				assert_eq!(cursor.first(), Some(b'r'));
+				assert_eq!(cursor.consume(), Some(b'r'));
+
+				assert_eq!(cursor.first(), Some(b'l'));
+				assert_eq!(cursor.consume(), Some(b'l'));
+
+				assert_eq!(cursor.first(), Some(b'd'));
+				assert_eq!(cursor.consume(), Some(b'd'));
+
+				assert_eq!(cursor.first(), Some(b'!'));
+				assert_eq!(cursor.consume(), Some(b'!'));
+
+				assert_eq!(cursor.first(), None);
+				assert_eq!(cursor.consume(), None);
+
+				assert_eq!(cursor.first(), None);
+				assert_eq!(cursor.consume(), None);
+			}
+		}
+	}
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct Lexer<'a> {
@@ -838,11 +904,11 @@ mod lex {
 
 			// Check eol here because in the `match` the first byte is already
 			// poped and thus the cursor cant detect any eol.
-			if self.cursor.consume_any_eol() {
+			self.cursor.consume_while_eol();
+
+			if self.cursor.byte_pos() > start {
 				return self.emit_token(start, TokenKind::Eol);
 			}
-
-			// TODO: be able to define decimal separator
 
 			// 1) Check 1 byte symbols
 			// 2) Check String start
@@ -929,7 +995,7 @@ mod lex {
 				});
 			}
 
-			self.emit_token(start, TokenKind::Literal { kind })
+			self.emit_token(start, TokenKind::literal(kind))
 		}
 
 		fn lex_string(&mut self, start: BytePos, first: u8) -> Token {
@@ -953,7 +1019,7 @@ mod lex {
 				}
 			}
 
-			self.emit_token(start, TokenKind::Literal { kind: LiteralKind::String { terminated } })
+			self.emit_token(start, TokenKind::literal(LiteralKind::String { terminated }))
 		}
 
 		fn lex_ident(&mut self, start: BytePos) -> Token {
@@ -963,15 +1029,9 @@ mod lex {
 			let content = &self.bytes[start.as_usize()..self.cursor.pos()];
 
 			if content.eq_ignore_ascii_case(b"true") {
-				self.emit_token(
-					start,
-					TokenKind::Literal { kind: LiteralKind::Boolean { value: true } },
-				)
+				self.emit_token(start, TokenKind::literal(LiteralKind::Boolean { value: true }))
 			} else if content.eq_ignore_ascii_case(b"false") {
-				self.emit_token(
-					start,
-					TokenKind::Literal { kind: LiteralKind::Boolean { value: false } },
-				)
+				self.emit_token(start, TokenKind::literal(LiteralKind::Boolean { value: false }))
 			} else {
 				self.emit_token(start, TokenKind::Ident)
 			}
@@ -1052,6 +1112,8 @@ mod lex {
 }
 
 mod source {
+	use std::collections::HashMap;
+	use std::ops::Deref;
 	use std::path::PathBuf;
 
 	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1061,10 +1123,65 @@ mod source {
 		parent: Option<PathBuf>,
 	}
 
+	impl Origin {
+		pub fn new(path: PathBuf, parent: Option<PathBuf>) -> Self {
+			Self { path, parent }
+		}
+	}
+
 	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 	pub struct Source {
 		origin: Origin,
 		content: String,
+	}
+
+	impl Source {
+		pub fn new(origin: Origin, content: String) -> Self {
+			Self { origin, content }
+		}
+	}
+
+	impl AsRef<str> for Source {
+		fn as_ref(&self) -> &str {
+			&self.content
+		}
+	}
+
+	impl Deref for Source {
+		type Target = str;
+
+		fn deref(&self) -> &Self::Target {
+			&self.content
+		}
+	}
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+	pub struct SourceId(usize);
+
+	pub struct SourceMap {
+		ids: HashMap<PathBuf, SourceId>,
+		sources: Vec<Source>,
+	}
+
+	impl SourceMap {
+		pub fn contains(&self, source: &Source) -> bool {
+			self.ids.contains_key(&source.origin.path)
+		}
+
+		pub fn get(&self, id: SourceId) -> Option<&Source> {
+			self.sources.get(id.0)
+		}
+
+		pub fn insert_or_get(&mut self, source: Source) -> SourceId {
+			if let Some(id) = self.ids.get(&source.origin.path) {
+				*id
+			} else {
+				let id = SourceId(self.sources.len());
+				self.ids.insert(source.origin.path.clone(), id);
+				self.sources.push(source);
+				id
+			}
+		}
 	}
 }
 
@@ -1152,27 +1269,29 @@ mod diagnostic {
 	}
 
 	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	pub struct Label {
+	pub struct Label<ID> {
 		pub(crate) kind: LabelKind,
+		pub(crate) source_id: ID,
 		pub(crate) span: ByteSpan,
 		pub(crate) message: Option<Cow<'static, str>>,
 	}
 
-	impl Label {
+	impl<ID> Label<ID> {
 		pub const fn new(
 			kind: LabelKind,
+			source_id: ID,
 			span: ByteSpan,
 			message: Option<Cow<'static, str>>,
 		) -> Self {
-			Self { kind, span, message }
+			Self { kind, source_id, span, message }
 		}
 
-		pub fn primary<S: Into<ByteSpan>>(span: S) -> Self {
-			Self::new(LabelKind::Primary, span.into(), None)
+		pub fn primary<S: Into<ByteSpan>>(source_id: ID, span: S) -> Self {
+			Self::new(LabelKind::Primary, source_id, span.into(), None)
 		}
 
-		pub fn secondary<S: Into<ByteSpan>>(span: S) -> Self {
-			Self::new(LabelKind::Secondary, span.into(), None)
+		pub fn secondary<S: Into<ByteSpan>>(source_id: ID, span: S) -> Self {
+			Self::new(LabelKind::Secondary, source_id, span.into(), None)
 		}
 
 		pub fn with_message<M: Into<Cow<'static, str>>>(mut self, message: M) -> Self {
@@ -1182,43 +1301,45 @@ mod diagnostic {
 	}
 
 	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	pub struct Diagnostic {
+	pub struct Diagnostic<ID> {
 		pub(crate) severity: Severity,
 		pub(crate) code: Option<Code>,
 		pub(crate) message: Option<Cow<'static, str>>,
-		pub(crate) labels: Vec<Label>,
+		pub(crate) labels: Vec<Label<ID>>,
 		pub(crate) notes: Vec<Cow<'static, str>>,
+		pub(crate) children: Vec<Self>,
 	}
 
-	impl Diagnostic {
+	impl<ID> Diagnostic<ID> {
 		pub fn new(
 			severity: Severity,
 			code: Option<Code>,
 			message: Option<Cow<'static, str>>,
-			labels: Vec<Label>,
+			labels: Vec<Label<ID>>,
 			notes: Vec<Cow<'static, str>>,
+			children: Vec<Self>,
 		) -> Self {
-			Self { severity, code, message, labels, notes }
+			Self { severity, code, message, labels, notes, children }
 		}
 
 		pub fn bug() -> Self {
-			Self::new(Severity::Bug, None, None, Vec::new(), Vec::new())
+			Self::new(Severity::Bug, None, None, Vec::new(), Vec::new(), Vec::new())
 		}
 
 		pub fn error() -> Self {
-			Self::new(Severity::Error, None, None, Vec::new(), Vec::new())
+			Self::new(Severity::Error, None, None, Vec::new(), Vec::new(), Vec::new())
 		}
 
 		pub fn warning() -> Self {
-			Self::new(Severity::Warning, None, None, Vec::new(), Vec::new())
+			Self::new(Severity::Warning, None, None, Vec::new(), Vec::new(), Vec::new())
 		}
 
 		pub fn note() -> Self {
-			Self::new(Severity::Note, None, None, Vec::new(), Vec::new())
+			Self::new(Severity::Note, None, None, Vec::new(), Vec::new(), Vec::new())
 		}
 
 		pub fn help() -> Self {
-			Self::new(Severity::Help, None, None, Vec::new(), Vec::new())
+			Self::new(Severity::Help, None, None, Vec::new(), Vec::new(), Vec::new())
 		}
 
 		pub const fn with_code(mut self, code: Code) -> Self {
@@ -1231,12 +1352,12 @@ mod diagnostic {
 			self
 		}
 
-		pub fn with_label(mut self, label: Label) -> Self {
+		pub fn with_label(mut self, label: Label<ID>) -> Self {
 			self.labels.push(label);
 			self
 		}
 
-		pub fn with_labels(mut self, labels: Vec<Label>) -> Self {
+		pub fn with_labels(mut self, labels: Vec<Label<ID>>) -> Self {
 			self.labels.extend(labels.into_iter());
 			self
 		}
@@ -1250,28 +1371,55 @@ mod diagnostic {
 			self.notes.extend(notes.into_iter().map(|n| n.into()));
 			self
 		}
+
+		pub fn with_child(mut self, child: Self) -> Self {
+			self.children.push(child);
+			self
+		}
+
+		pub fn with_children(mut self, children: Vec<Self>) -> Self {
+			self.children.extend(children.into_iter());
+			self
+		}
+
+		pub fn expand_on_last_label<F>(mut self, mut f: F) -> Self
+		where
+			ID: Clone,
+			F: FnMut(Label<ID>) -> Label<ID>,
+		{
+			let last_label = self.labels.last().expect("No label present on diagnostic");
+
+			let cloned = Label::secondary(last_label.source_id.clone(), last_label.span);
+
+			self.labels.push(f(cloned));
+
+			self
+		}
 	}
 
 	mod fmt {}
 }
 
 mod session {
-	use crate::diagnostic::Diagnostic;
+	use crate::diagnostic::{Diagnostic, Label};
 	use crate::source::Source;
 
+	pub type SingleLabel = Label<()>;
+	pub type SingleDiagnostic = Diagnostic<()>;
+
 	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	pub struct Session {
-		source: Source,
-		diagnostics: Vec<Diagnostic>,
-		failed: bool,
+	pub struct SingleSession {
+		pub(crate) source: Source,
+		pub(crate) diagnostics: Vec<SingleDiagnostic>,
+		pub(crate) failed: bool,
 	}
 
-	impl Session {
+	impl SingleSession {
 		pub const fn new(source: Source) -> Self {
 			Self { source, diagnostics: Vec::new(), failed: false }
 		}
 
-		pub fn add_diagnositic(&mut self, diagnostic: Diagnostic) {
+		pub fn add_diagnositic(&mut self, diagnostic: SingleDiagnostic) {
 			self.diagnostics.push(diagnostic)
 		}
 
@@ -1351,9 +1499,15 @@ mod date {
 
 	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 	pub struct UncheckedDate {
-		year: i16,
-		month: u8,
-		day: u8,
+		pub(crate) year: i16,
+		pub(crate) month: u8,
+		pub(crate) day: u8,
+	}
+
+	impl UncheckedDate {
+		pub fn from_ymd(year: i16, month: u8, day: u8) -> Self {
+			Self { year, month, day }
+		}
 	}
 
 	impl fmt::Display for UncheckedDate {
@@ -1466,7 +1620,7 @@ mod metadata {
 	use std::fmt;
 
 	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	pub struct Tag(String);
+	pub struct Tag(pub(crate) String);
 
 	impl fmt::Display for Tag {
 		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1475,7 +1629,7 @@ mod metadata {
 	}
 
 	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	pub struct Link(String);
+	pub struct Link(pub(crate) String);
 
 	impl fmt::Display for Link {
 		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1485,8 +1639,8 @@ mod metadata {
 
 	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 	pub struct Attribute {
-		key: String,
-		value: String,
+		pub(crate) key: String,
+		pub(crate) value: String,
 	}
 
 	impl fmt::Display for Attribute {
@@ -1558,6 +1712,7 @@ mod directive {
 		(@key ) => { None };
 	}
 
+	// TODO: tag values with bytespan
 	directives! {
 		/// `yyyy-mm-dd open SEGMENT:SEGMENT`
 		Open {
@@ -1632,7 +1787,7 @@ mod directive {
 		Document {
 			date: UncheckedDate,
 			account: UncheckedPath,
-			document_path: PathBuf,
+			document_path: String,
 		} : Keyword::Document,
 
 		/// `price`
@@ -1677,7 +1832,7 @@ mod directive {
 
 		/// `include`
 		Include {
-			path: PathBuf,
+			path: String,
 		} : Keyword::Include,
 	}
 
@@ -1707,24 +1862,153 @@ mod directive {
 }
 
 mod parse {
-	use crate::diagnostic::Diagnostic;
-	use crate::directive::Directive;
-	use crate::session::Session;
+	mod cursor {
+		use std::borrow::Cow;
 
-	type Result<T, E = Diagnostic> = std::result::Result<T, E>;
+		use crate::pos::{BytePos, Pos as _};
+		use crate::span::ByteSpan;
+		use crate::token::{Token, TokenKind};
 
-	pub struct Parser {
-		session: Session,
+		// TODO: option/functions for skipping invisilbe tokens
+
+		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+		pub struct Cursor<'a> {
+			// TODO: either collect all at the start or do it lazily via an iter
+			tokens: &'a [Token],
+			pos: usize,
+		}
+
+		impl<'a> Cursor<'a> {
+			pub const fn new(tokens: &'a [Token]) -> Self {
+				Self { tokens, pos: 0 }
+			}
+
+			pub fn nth(&self, nth: usize) -> Option<&Token> {
+				self.tokens.get(self.pos + nth)
+			}
+
+			pub fn first(&self) -> Option<&Token> {
+				self.nth(0)
+			}
+
+			pub fn first_or_eof(&self) -> Cow<'_, Token> {
+				if let Some(token) = self.nth(0) {
+					Cow::Borrowed(token)
+				} else {
+					Cow::Owned(Token::new(
+						ByteSpan::new(BytePos::from_usize(self.pos), BytePos::from_usize(self.pos)),
+						TokenKind::Eof,
+					))
+				}
+			}
+
+			pub fn second(&self) -> Option<&Token> {
+				self.nth(1)
+			}
+
+			pub unsafe fn advance_unchecked(&mut self, amount: usize) {
+				debug_assert!(self.pos + amount <= self.tokens.len());
+
+				self.pos += amount;
+			}
+
+			pub fn advance(&mut self, amount: usize) {
+				let amount = ::std::cmp::min(self.absolute_idx(amount), self.tokens.len());
+
+				unsafe {
+					self.advance_unchecked(amount);
+				}
+			}
+
+			pub fn consume(&mut self) -> Option<Token> {
+				let consumed = self.first()?.clone();
+
+				debug_assert_eq!(consumed, self.tokens[self.pos]);
+
+				unsafe {
+					self.advance_unchecked(1);
+				}
+
+				Some(consumed)
+			}
+
+			pub fn consume_while<F>(&mut self, mut f: F) -> bool
+			where
+				F: FnMut(&Token) -> bool,
+			{
+				while let Some(token) = self.first() {
+					if f(token) {
+						unsafe {
+							self.advance_unchecked(1);
+						}
+					} else {
+						return false;
+					}
+				}
+
+				true
+			}
+
+			pub fn consume_until<F>(&mut self, mut f: F) -> bool
+			where
+				F: FnMut(&Token) -> bool,
+			{
+				while let Some(token) = self.first() {
+					if !f(token) {
+						unsafe {
+							self.advance_unchecked(1);
+						}
+					} else {
+						return false;
+					}
+				}
+
+				true
+			}
+
+			pub fn pos(&self) -> usize {
+				self.pos
+			}
+
+			fn absolute_idx(&self, relative: usize) -> usize {
+				self.pos + relative
+			}
+		}
 	}
 
-	impl Parser {
+	use std::borrow::Cow;
+	use std::fmt;
+	use std::str::FromStr;
+
+	use self::cursor::Cursor;
+	use crate::date::UncheckedDate;
+	use crate::diagnostic::Diagnostic;
+	use crate::directive::{Directive, DirectiveKind};
+	use crate::keyword::Keyword;
+	use crate::metadata::Tag;
+	use crate::session::{SingleDiagnostic, SingleLabel, SingleSession};
+	use crate::span::{ByteSpan, Span as _};
+	use crate::token::{LiteralKind, Token, TokenKind};
+
+	type Result<T, E = SingleDiagnostic> = std::result::Result<T, E>;
+
+	pub struct Parser<'a> {
+		session: SingleSession,
+		cursor: Cursor<'a>,
+	}
+
+	impl<'a> Parser<'a> {
+		pub fn new(session: SingleSession, tokens: &'a [Token]) -> Self {
+			Self { session, cursor: Cursor::new(&tokens) }
+		}
+
 		pub fn next_directive(&mut self) -> Option<Directive> {
 			loop {
 				match self.parse_top_level_directive()? {
 					Ok(directive) => return Some(directive),
 					Err(diagnostic) => {
 						self.emit_diagnostic(diagnostic);
-						self.recover();
+						self.recover_state();
 					}
 				}
 			}
@@ -1732,11 +2016,11 @@ mod parse {
 
 		// Allowed: Destructors can not be const
 		#[allow(clippy::missing_const_for_fn)]
-		pub fn into_session(self) -> Session {
+		pub fn into_session(self) -> SingleSession {
 			self.session
 		}
 
-		fn emit_diagnostic(&mut self, diagnostic: Diagnostic) {
+		fn emit_diagnostic(&mut self, diagnostic: SingleDiagnostic) {
 			if diagnostic.severity.is_hard_error() {
 				self.session.set_failed();
 			}
@@ -1744,13 +2028,572 @@ mod parse {
 			self.session.add_diagnositic(diagnostic);
 		}
 
-		fn recover(&mut self) {
-			// Skip to tokens `Eol` followed by `Date`
-			todo!()
+		// Skips to the first token after a eol
+		fn skip_to_sol(&mut self) {
+			if self.cursor.pos() > 0 {
+				// Skip to next eol token
+				self.cursor.consume_until(|Token { kind, .. }| kind == &TokenKind::Eol);
+				// Skip eol tokens
+				self.cursor.consume_while(|Token { kind, .. }| kind == &TokenKind::Eol);
+			}
+		}
+
+		fn recover_state(&mut self) {
+			// Fix state by first going to the start new line
+			self.skip_to_sol();
+
+			/*
+			// Check if next token could be the start of a directive
+			while let Some(Token { span, kind }) = self.cursor.first() {
+				// TODO: also allow negative years
+				if matches!(*kind, TokenKind::Literal { kind: LiteralKind::Integer })
+					// ISO-8601 prescibes that years must be atleast 4 digits
+					&& span.len() >= 4
+				{
+					// Probably found the start of a date
+					// TODO: Try parse it as date and only then break?
+					break;
+				}
+
+				if matches!(kind, TokenKind::Ident) {
+					if let Some(keyword) = Keyword::from_str_opt(span.index(&self.session.source)) {
+						if matches!(
+							keyword,
+							Keyword::PushTag
+								| Keyword::PopTag | Keyword::Option
+								| Keyword::Plugin | Keyword::Include
+						) {
+							break;
+						}
+					}
+				}
+
+				// No valid start of directive; Goto next start of line
+				self.skip_to_sol();
+			}
+			*/
+		}
+
+		fn try_parse<P, E>(&self, token: &Token, expected: &str) -> Result<P>
+		where
+			P: FromStr<Err = E>,
+			E: fmt::Display,
+		{
+			let s = token.span.index(&self.session.source);
+
+			<P>::from_str(s).map_err(|err| {
+				SingleDiagnostic::error()
+					.with_message(format!(
+						"failed to parse token `{}` as `{}`",
+						token.kind.kind_str(),
+						expected
+					))
+					.with_label(SingleLabel::primary((), *token.span()))
+					.with_note(err.to_string())
+			})
+		}
+
+		fn opt(&mut self, kind: TokenKind) -> Option<Token> {
+			let first = self.cursor.first_or_eof();
+
+			if first.kind == kind {
+				// TODO: move into cursor somehow
+				// If token is owned don't consume it as it is not actually in the tokens input
+				let advance = matches!(first, Cow::Borrowed(_));
+
+				let token = first.into_owned();
+
+				if advance {
+					unsafe {
+						self.cursor.advance_unchecked(1);
+					}
+				}
+
+				Some(token)
+			} else {
+				None
+			}
+		}
+
+		fn opt_any(&mut self, kinds: &[TokenKind]) -> Option<Token> {
+			let first = self.cursor.first_or_eof();
+
+			let matches = kinds.iter().any(|kind| kind == &first.kind);
+
+			if matches {
+				// TODO: move into cursor somehow
+				// If token is owned don't consume it as it is not actually in the tokens input
+				let advance = matches!(first, Cow::Borrowed(_));
+
+				let token = first.into_owned();
+
+				if advance {
+					unsafe {
+						self.cursor.advance_unchecked(1);
+					}
+				}
+
+				Some(token)
+			} else {
+				None
+			}
+		}
+
+		fn opt_string(&mut self) -> Option<(ByteSpan, String)> {
+			let Token { span, .. } = self.opt_any(&[
+				TokenKind::literal(LiteralKind::String { terminated: true }),
+				TokenKind::literal(LiteralKind::String { terminated: false }),
+			])?;
+
+			// TODO: decide what to do with unclosed strings
+
+			Some((span, span.index(&self.session.source).to_owned()))
+		}
+
+		fn expect(&mut self, kind: TokenKind) -> Result<Token> {
+			let token = self.opt(kind);
+
+			if let Some(token) = token {
+				Ok(token)
+			} else {
+				let first = self.cursor.first_or_eof();
+
+				let diagnostic = SingleDiagnostic::error()
+					.with_message(format!(
+						"expected token `{}` but found `{}`",
+						kind.kind_str(),
+						first.kind.kind_str()
+					))
+					.with_label(SingleLabel::primary((), *first.span()));
+
+				Err(diagnostic)
+			}
+		}
+
+		fn expect_any(&mut self, kinds: &[TokenKind]) -> Result<Token> {
+			let token = self.opt_any(kinds);
+
+			if let Some(token) = token {
+				Ok(token)
+			} else {
+				let first = self.cursor.first_or_eof();
+
+				// TODO: optimize allocations
+				let kinds_str =
+					kinds.iter().map(|kind| kind.kind_str()).collect::<Vec<_>>().join(", ");
+
+				let diagnostic = SingleDiagnostic::error()
+					.with_message(format!(
+						"expected one of the following tokens `[{}]` but found `{}`",
+						&kinds_str,
+						first.kind.kind_str()
+					))
+					.with_label(SingleLabel::primary((), *first.span()));
+
+				Err(diagnostic)
+			}
+		}
+
+		fn expect_string(&mut self) -> Result<(ByteSpan, String)> {
+			let Token { span, .. } = self.expect_any(&[
+				TokenKind::literal(LiteralKind::String { terminated: true }),
+				TokenKind::literal(LiteralKind::String { terminated: false }),
+			])?;
+
+			// TODO: decide what to do with unclosed strings
+
+			Ok((span, span.index(&self.session.source).to_owned()))
+		}
+
+		fn expect_date(&mut self) -> Result<(ByteSpan, UncheckedDate)> {
+			// TODO: check if whitespaces between tokens
+
+			fn date_diagnostic(
+				primary_span: ByteSpan,
+				secondary_span: ByteSpan,
+				action: &'static str,
+				note: &'static str,
+			) -> SingleDiagnostic {
+				SingleDiagnostic::error()
+					.with_message("found invalid date")
+					.with_labels(vec![
+						SingleLabel::primary((), primary_span).with_message(action),
+						SingleLabel::secondary((), secondary_span)
+							.with_message("while trying to parse this date"),
+					])
+					.with_note(note)
+			}
+
+			fn extend_date_diagnostic(
+				diagnostic: SingleDiagnostic,
+				action: &'static str,
+				date_span: Option<ByteSpan>,
+			) -> SingleDiagnostic {
+				// TODO: better
+				let primary_span = diagnostic.labels.last().unwrap().span;
+
+				diagnostic.with_labels(vec![
+					SingleLabel::secondary((), primary_span).with_message(action),
+					SingleLabel::secondary((), date_span.unwrap_or(primary_span))
+						.with_message("while trying to parse this date"),
+				])
+			}
+
+			let sign_token = self.opt_any(&[TokenKind::Hyphen, TokenKind::Plus]);
+
+			let year_token =
+				self.expect(TokenKind::literal(LiteralKind::Integer)).map_err(|diagnostic| {
+					extend_date_diagnostic(
+						diagnostic,
+						"while trying to parse this as year",
+						sign_token.map(|token| *token.span()),
+					)
+				})?;
+
+			let mut date_span = if let Some(sign_token) = sign_token {
+				sign_token.span().union(year_token.span())
+			} else {
+				*year_token.span()
+			};
+
+			let year = if year_token.span.len() >= 4 {
+				let year: i16 = self.try_parse(&year_token, "i16").map_err(|diagnostic| {
+					extend_date_diagnostic(
+						diagnostic,
+						"while trying to parse this as year",
+						Some(date_span),
+					)
+				})?;
+
+				if matches!(sign_token, Some(Token { kind: TokenKind::Hyphen, .. })) {
+					-year
+				} else {
+					year
+				}
+			} else {
+				return Err(date_diagnostic(
+					*year_token.span(),
+					date_span,
+					"while trying to parse this as year",
+					"A valid year must be 4 digits long and can optionally prefixed with a sign \
+					 (`+`/`-`)",
+				));
+			};
+
+			let separator_token =
+				self.expect_any(&[TokenKind::Hyphen, TokenKind::Slash]).map_err(|diagnostic| {
+					extend_date_diagnostic(
+						diagnostic,
+						"while trying to parse this as date separator",
+						Some(date_span),
+					)
+					.with_note("The date separator can either be `-` or `/`")
+					.with_note("The first found separator dictates the second one")
+				})?;
+
+			date_span = date_span.union(separator_token.span());
+
+			let month_token =
+				self.expect(TokenKind::literal(LiteralKind::Integer)).map_err(|diagnostic| {
+					extend_date_diagnostic(
+						diagnostic,
+						"while trying to parse this as month",
+						Some(date_span),
+					)
+				})?;
+
+			date_span = date_span.union(month_token.span());
+
+			let month = if month_token.span.len() == 2 {
+				self.try_parse(&month_token, "u8").map_err(|diagnostic| {
+					extend_date_diagnostic(
+						diagnostic,
+						"while trying to parse this as month",
+						Some(date_span),
+					)
+				})?
+			} else {
+				return Err(date_diagnostic(
+					*month_token.span(),
+					date_span,
+					"while trying to parse this as month",
+					"A valid month must be 2 digits long",
+				));
+			};
+
+			let separator_token = self.expect(separator_token.kind).map_err(|diagnostic| {
+				extend_date_diagnostic(
+					diagnostic,
+					"while trying to parse this as date separator",
+					Some(date_span),
+				)
+				.with_note("The date separator can either be `-` or `/`")
+				.with_note("The first found separator dictates the second one")
+			})?;
+
+			date_span = date_span.union(separator_token.span());
+
+			let day_token =
+				self.expect(TokenKind::literal(LiteralKind::Integer)).map_err(|diagnostic| {
+					extend_date_diagnostic(
+						diagnostic,
+						"while trying to parse this as day",
+						Some(date_span),
+					)
+				})?;
+
+			date_span = date_span.union(day_token.span());
+
+			let day = if day_token.span.len() == 2 {
+				self.try_parse(&day_token, "u8").map_err(|diagnostic| {
+					extend_date_diagnostic(
+						diagnostic,
+						"while trying to parse this as day",
+						Some(date_span),
+					)
+				})?
+			} else {
+				return Err(date_diagnostic(
+					*day_token.span(),
+					date_span,
+					"while trying to parse this as day",
+					"A valid day must be 2 digits long",
+				));
+			};
+
+			Ok((date_span, UncheckedDate::from_ymd(year, month, day)))
 		}
 
 		fn parse_top_level_directive(&mut self) -> Option<Result<Directive>> {
-			todo!()
+			// TLDS:
+			//		- Date
+			//		- push/poptag
+			//		- option
+			//		- plugin
+			//		- include
+
+			// TODO: move while condition into cursor
+			// TODO: skip eol tokens
+			while !matches!(self.cursor.first(), None | Some(Token { kind: TokenKind::Eof, .. })) {
+				let cursor_cp = self.cursor;
+
+				// TODO: decide when to add diagnostic (e.g. if date was malformed?)
+
+				if let Ok(date) = self.expect_date() {
+					return Some(self.parse_date_directive(date));
+				} else {
+					self.cursor = cursor_cp;
+				}
+
+				let Token { span, kind } = self.cursor.consume()?;
+
+				if matches!(kind, TokenKind::Ident) {
+					if let Some(keyword) = Keyword::from_str_opt(span.index(&self.session.source)) {
+						if matches!(
+							keyword,
+							Keyword::PushTag
+								| Keyword::PopTag | Keyword::Option
+								| Keyword::Plugin | Keyword::Include
+						) {
+							return Some(self.parse_keyword_directive((span, keyword)));
+						}
+					}
+				}
+
+				// No valid start of directive; Goto next start of line
+				self.skip_to_sol();
+			}
+
+			None
+		}
+
+		// TODO: include span of date to reference it in diagnostics
+		fn parse_date_directive(
+			&mut self,
+			(date_span, date): (ByteSpan, UncheckedDate),
+		) -> Result<Directive> {
+			use crate::directive::DirectiveKind;
+			use crate::metadata::Tag;
+			use crate::pos::BytePos;
+
+			let kind = DirectiveKind::PushTag { tag: Tag(String::from("a")) };
+			Ok(Directive::new(ByteSpan::new(BytePos(0), BytePos(0)), kind))
+		}
+
+		fn parse_keyword_directive(
+			&mut self,
+			(keyword_span, keyword): (ByteSpan, Keyword),
+		) -> Result<Directive> {
+			use crate::directive::DirectiveKind;
+			use crate::metadata::Tag;
+			use crate::pos::BytePos;
+
+			match keyword {
+				Keyword::PushTag => self.parse_pushtag(keyword_span, keyword),
+				Keyword::PopTag => self.parse_poptag(keyword_span, keyword),
+				Keyword::Option => self.parse_option(keyword_span, keyword),
+				Keyword::Plugin => self.parse_plugin(keyword_span, keyword),
+				Keyword::Include => self.parse_include(keyword_span, keyword),
+				// TODO: better error / no error?
+				_ => Err(Diagnostic::error()),
+			}
+		}
+
+		fn parse_pushtag(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
+			debug_assert_eq!(keyword, Keyword::PushTag);
+
+			let mut directive_span = keyword_span;
+
+			let (tag_span, tag) = self.expect_string().map_err(|diagnostic| {
+				diagnostic.with_label(
+					SingleLabel::secondary((), directive_span)
+						.with_message("while trying to parse this pushtag directive"),
+				)
+			})?;
+
+			directive_span = directive_span.union(&tag_span);
+
+			let tag = Tag(tag);
+
+			Ok(Directive::new(directive_span, DirectiveKind::PushTag { tag }))
+		}
+
+		fn parse_poptag(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
+			debug_assert_eq!(keyword, Keyword::PopTag);
+
+			let mut directive_span = keyword_span;
+
+			let (tag_span, tag) = self.expect_string().map_err(|diagnostic| {
+				diagnostic.with_label(
+					SingleLabel::secondary((), directive_span)
+						.with_message("while trying to parse this poptag directive"),
+				)
+			})?;
+
+			directive_span = directive_span.union(&tag_span);
+
+			let tag = Tag(tag);
+
+			Ok(Directive::new(directive_span, DirectiveKind::PopTag { tag }))
+		}
+
+		fn parse_option(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
+			debug_assert_eq!(keyword, Keyword::Option);
+
+			let mut directive_span = keyword_span;
+
+			let (name_span, name) = self.expect_string().map_err(|diagnostic| {
+				diagnostic
+					.expand_on_last_label(|label| {
+						label.with_message("while trying to parse this as option name")
+					})
+					.with_label(
+						SingleLabel::secondary((), directive_span)
+							.with_message("while trying to parse this option directive"),
+					)
+			})?;
+
+			directive_span = directive_span.union(&name_span);
+
+			let (value_span, value) = self.expect_string().map_err(|diagnostic| {
+				diagnostic
+					.expand_on_last_label(|label| {
+						label.with_message("while trying to parse this as option value")
+					})
+					.with_label(
+						SingleLabel::secondary((), directive_span)
+							.with_message("while trying to parse this option directive"),
+					)
+			})?;
+
+			directive_span = directive_span.union(&value_span);
+
+			Ok(Directive::new(directive_span, DirectiveKind::Option { name, value }))
+		}
+
+		fn parse_plugin(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
+			debug_assert_eq!(keyword, Keyword::Plugin);
+			let mut directive_span = keyword_span;
+
+			let (name_span, name) = self.expect_string().map_err(|diagnostic| {
+				diagnostic
+					.expand_on_last_label(|label| {
+						label.with_message("while trying to parse this as plugin name")
+					})
+					.with_label(
+						SingleLabel::secondary((), directive_span)
+							.with_message("while trying to parse this plugin directive"),
+					)
+			})?;
+
+			directive_span = directive_span.union(&name_span);
+
+			let configuration = if let Some((configuration_span, configuration)) = self.opt_string()
+			{
+				directive_span = directive_span.union(&configuration_span);
+				Some(configuration)
+			} else {
+				None
+			};
+
+			Ok(Directive::new(directive_span, DirectiveKind::Plugin { name, configuration }))
+		}
+
+		fn parse_include(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
+			debug_assert_eq!(keyword, Keyword::Include);
+
+			let mut directive_span = keyword_span;
+
+			let (path_span, path) = self.expect_string().map_err(|diagnostic| {
+				diagnostic.with_label(
+					SingleLabel::secondary((), directive_span)
+						.with_message("while trying to parse this include directive"),
+				)
+			})?;
+
+			directive_span = directive_span.union(&path_span);
+
+			Ok(Directive::new(directive_span, DirectiveKind::Include { path }))
+		}
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use std::path::PathBuf;
+
+		use super::*;
+		use crate::lex::Lexer;
+		use crate::source::{Origin, Source};
+
+		#[test]
+		fn parse_date() {
+			let content = "2021-01-01";
+			let mut lexer = Lexer::from_bytes(&content);
+
+			let mut tokens = Vec::new();
+
+			loop {
+				let token = lexer.next_token();
+				println!("[{}/`{}`] {:?}", token.span(), token.span().index(content), token.kind());
+
+				if token.kind() == &TokenKind::Eof {
+					tokens.push(token);
+					break;
+				}
+
+				tokens.push(token);
+			}
+
+			let mut parser = Parser::new(
+				SingleSession::new(Source::new(
+					Origin::new(PathBuf::new(), None),
+					content.to_owned(),
+				)),
+				&tokens,
+			);
+
+			let diag = parser.expect_date();
+			println!("{:?}", diag);
 		}
 	}
 }
