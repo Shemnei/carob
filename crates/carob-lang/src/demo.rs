@@ -16,7 +16,7 @@ mod tests {
 
 		let content = std::fs::read_to_string(path).unwrap();
 
-		let mut lexer = Lexer::new(content.as_bytes());
+		let mut lexer = Lexer::new(&content);
 
 		let start = SystemTime::now();
 
@@ -39,7 +39,7 @@ mod tests {
 
 		let content = std::fs::read_to_string(&path).unwrap();
 
-		let mut lexer = Lexer::new(content.as_bytes());
+		let mut lexer = Lexer::new(&content);
 
 		let start = SystemTime::now();
 

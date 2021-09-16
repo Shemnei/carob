@@ -4,9 +4,8 @@ use self::cursor::Cursor;
 use crate::pos::{BytePos, Pos as _};
 use crate::span::ByteSpan;
 use crate::token::{LiteralKind, Token, TokenKind};
-use crate::util::ascii;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone)]
 pub struct Lexer<'a> {
 	bytes: &'a [u8],
 	cursor: Cursor<'a>,
@@ -14,15 +13,8 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-	pub const fn new(bytes: &'a [u8]) -> Self {
-		Self { bytes, cursor: Cursor::new(bytes), emit_invisible: false }
-	}
-
-	pub fn from_bytes<B>(bytes: &'a B) -> Self
-	where
-		B: 'a + AsRef<[u8]>,
-	{
-		Self::new(bytes.as_ref())
+	pub fn new(s: &'a str) -> Self {
+		Self { bytes: s.as_bytes(), cursor: Cursor::new(s), emit_invisible: false }
 	}
 
 	pub fn next_token(&mut self) -> Token {
@@ -38,7 +30,7 @@ impl<'a> Lexer<'a> {
 
 		// Check if there is a line comment next and if so consume until
 		// eol.
-		if matches!(self.cursor.first(), Some(b';')) {
+		if matches!(self.cursor.first(), Some(';')) {
 			self.cursor.consume_until_eol();
 			if self.emit_invisible {
 				return self.emit_token(start, TokenKind::Comment);
@@ -60,31 +52,33 @@ impl<'a> Lexer<'a> {
 		// 3) Check Number start
 		// 5) Is literal
 		match (self.cursor.consume(), self.cursor.first()) {
-			(Some(b'('), _) => self.emit_token(start, TokenKind::LeftParen),
-			(Some(b')'), _) => self.emit_token(start, TokenKind::RightParen),
-			(Some(b'{'), _) => self.emit_token(start, TokenKind::LeftBrace),
-			(Some(b'}'), _) => self.emit_token(start, TokenKind::RightParen),
-			(Some(b','), _) => self.emit_token(start, TokenKind::Comma),
+			(Some('('), _) => self.emit_token(start, TokenKind::LeftParen),
+			(Some(')'), _) => self.emit_token(start, TokenKind::RightParen),
+			(Some('{'), _) => self.emit_token(start, TokenKind::LeftBrace),
+			(Some('}'), _) => self.emit_token(start, TokenKind::RightParen),
+			(Some(','), _) => self.emit_token(start, TokenKind::Comma),
 			// TODO: Check if digit after that and if so parse as number
-			(Some(b'.'), _) => self.emit_token(start, TokenKind::Dot),
-			(Some(b'-'), _) => self.emit_token(start, TokenKind::Hyphen),
-			(Some(b'+'), _) => self.emit_token(start, TokenKind::Plus),
-			(Some(b':'), _) => self.emit_token(start, TokenKind::Colon),
-			(Some(b';'), _) => self.emit_token(start, TokenKind::Semicolon),
-			(Some(b'/'), _) => self.emit_token(start, TokenKind::Slash),
-			(Some(b'*'), _) => self.emit_token(start, TokenKind::Asterisk),
-			(Some(b'^'), _) => self.emit_token(start, TokenKind::Caret),
-			(Some(b'!'), _) => self.emit_token(start, TokenKind::ExclamationMark),
-			(Some(b'@'), _) => self.emit_token(start, TokenKind::AtSign),
+			(Some('.'), _) => self.emit_token(start, TokenKind::Dot),
+			(Some('-'), _) => self.emit_token(start, TokenKind::Hyphen),
+			(Some('+'), _) => self.emit_token(start, TokenKind::Plus),
+			(Some(':'), _) => self.emit_token(start, TokenKind::Colon),
+			(Some(';'), _) => self.emit_token(start, TokenKind::Semicolon),
+			(Some('/'), _) => self.emit_token(start, TokenKind::Slash),
+			(Some('*'), _) => self.emit_token(start, TokenKind::Asterisk),
+			(Some('^'), _) => self.emit_token(start, TokenKind::Caret),
+			(Some('!'), _) => self.emit_token(start, TokenKind::ExclamationMark),
+			(Some('@'), _) => self.emit_token(start, TokenKind::AtSign),
 
 			// Number
-			(Some(b), _) if ascii::is_ascii_digit(b) => self.lex_number(start, b),
+			(Some(c), _) if char::is_ascii_digit(&c) => self.lex_number(start, c),
 
 			// String
-			(Some(b), _) if ascii::is_ascii_quotation_mark(b) => self.lex_string(start, b),
+			(Some(c @ '"'), _) => self.lex_string(start, c),
 
 			// Identifier
-			(Some(_), _) => self.lex_ident(start),
+			(Some(c), _) if char::is_alphabetic(c) => self.lex_ident(start),
+
+			(Some(_), _) => self.emit_token(start, TokenKind::Unknown),
 
 			// Eof
 			(None, _) => self.emit_eof(start),
@@ -92,72 +86,54 @@ impl<'a> Lexer<'a> {
 	}
 
 	// [0-9]+(.[0-9]*)?([+-]e[0-9]+)
-	fn lex_number(&mut self, start: BytePos, first: u8) -> Token {
+	fn lex_number(&mut self, start: BytePos, first: char) -> Token {
 		// e.g. 1_100,000.10e-10
 		// after e no more `.`
 
-		debug_assert!(ascii::is_ascii_digit(first));
+		debug_assert!(char::is_ascii_digit(&first));
 
 		let mut kind = LiteralKind::Integer;
 
-		let _ = self
-			.cursor
-			.consume_while(|b| ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b));
+		self.consume_digits();
 
-		if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_decimal_separator(b)) {
+		if matches!(self.cursor.first(), Some('.')) {
 			kind = LiteralKind::Float;
 
 			let separator = self.cursor.consume();
-			debug_assert!(
-				matches!(separator, Some(b) if ascii::is_ascii_number_decimal_separator(b))
-			);
+			debug_assert_eq!(separator, Some('.'));
 
-			let _ = self
-				.cursor
-				.consume_while(|b| ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b));
+			self.consume_digits();
 		}
 
-		if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_exponent(b))
-			|| matches!((self.cursor.first(), self.cursor.second()), (Some(a), Some(b)) if ascii::is_ascii_number_sign(a) && ascii::is_ascii_number_exponent(b))
-		{
+		if matches!(self.cursor.first(), Some('e' | 'E')) {
+			let exponent = self.cursor.consume();
+			debug_assert!(matches!(exponent, Some('e' | 'E')));
+
 			// TODO: check that there is a digit after the exponent before consuming
-			if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign(b)) {
-				if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign_negative(b))
-				{
+			if matches!(self.cursor.first(), Some('-' | '+')) {
+				let sign = self.cursor.consume();
+				debug_assert!(matches!(sign, Some('-' | '+')));
+
+				if matches!(sign, Some('-')) {
 					kind = LiteralKind::Float;
 				}
-
-				let sign = self.cursor.consume();
-				debug_assert!(matches!(sign, Some(b) if ascii::is_ascii_number_sign(b)));
 			}
 
-			let exponent = self.cursor.consume();
-			debug_assert!(matches!(exponent, Some(b) if ascii::is_ascii_number_exponent(b)));
-
-			let _ = self
-				.cursor
-				.consume_while(|b| ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b));
+			self.consume_digits();
 		}
 
 		self.emit_token(start, TokenKind::literal(kind))
 	}
 
-	fn lex_string(&mut self, start: BytePos, first: u8) -> Token {
-		debug_assert!(ascii::is_ascii_quotation_mark(first));
-
-		let closing = ascii::get_closing_quotation_mark(first)
-			.unwrap_or_else(|| panic!("Found no closing quotation mark for `0x{:x}`", start));
+	fn lex_string(&mut self, start: BytePos, first: char) -> Token {
+		debug_assert_eq!(first, '"');
 
 		let mut terminated = false;
 
-		while let Some(byte) = self.cursor.consume() {
-			if ascii::is_ascii_escape(byte) {
-				if self.cursor.consume().is_none() {
-					// Consume escaped byte. We dont care about utf-8 unicode
-					// as these bytes would always be than any ascii char.
-					break;
-				}
-			} else if byte == closing {
+		while let Some(c) = self.cursor.consume() {
+			if c == '\\' {
+				let _ = self.cursor.consume();
+			} else if c == '"' {
 				terminated = true;
 				break;
 			}
@@ -167,10 +143,10 @@ impl<'a> Lexer<'a> {
 	}
 
 	fn lex_ident(&mut self, start: BytePos) -> Token {
-		self.cursor.consume_until_whitespace_eol();
+		self.cursor.consume_while(|c| char::is_alphanumeric(c) || c == '_' || c == '-');
 
 		// Check if boolean
-		let content = &self.bytes[start.as_usize()..self.cursor.pos()];
+		let content = &self.bytes[start.as_usize()..self.cursor.offset()];
 
 		if content.eq_ignore_ascii_case(b"true") {
 			self.emit_token(start, TokenKind::literal(LiteralKind::Boolean { value: true }))
@@ -179,6 +155,10 @@ impl<'a> Lexer<'a> {
 		} else {
 			self.emit_token(start, TokenKind::Ident)
 		}
+	}
+
+	fn consume_digits(&mut self) {
+		let _ = self.cursor.consume_while(|c| char::is_ascii_digit(&c) || c == '_' || c == ',');
 	}
 
 	fn emit_token(&self, start: BytePos, kind: TokenKind) -> Token {
@@ -206,7 +186,7 @@ mod tests {
 	fn consume_whitespaces() {
 		fn test_whitespace_char(c: char) {
 			let s = c.to_string();
-			let mut lexer = Lexer::from_bytes(&s);
+			let mut lexer = Lexer::new(&s);
 
 			lexer.consume_whitespaces();
 
@@ -220,7 +200,7 @@ mod tests {
 
 		fn test_eol_char(c: char) {
 			let s = c.to_string();
-			let mut lexer = Lexer::from_bytes(&s);
+			let mut lexer = Lexer::new(&s);
 
 			lexer.consume_whitespaces();
 
@@ -241,9 +221,9 @@ mod tests {
 	fn lex_string() {
 		let content = r#""Hello \" World""#;
 
-		let mut lexer = Lexer::new(&content.as_bytes()[1..]);
+		let mut lexer = Lexer::new(&content[1..]);
 
-		lexer.lex_string(BytePos(0), b'"');
+		lexer.lex_string(BytePos(0), '"');
 
 		assert_eq!(
 			lexer.pos(),

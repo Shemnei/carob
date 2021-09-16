@@ -584,7 +584,7 @@ mod tests {
 	#[test]
 	fn parse_date() {
 		let content = "2021-01-01";
-		let mut lexer = Lexer::from_bytes(&content);
+		let mut lexer = Lexer::new(&content);
 
 		let mut tokens = Vec::new();
 

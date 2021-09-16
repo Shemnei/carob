@@ -86,6 +86,8 @@ tokens! {
 	// CHECK: Dates, Paths, Tags, Links, boolean, Key
 	// These could also be just in the parser
 
+	Unknown,
+
 	// End of file
 	Eof = '\0',
 

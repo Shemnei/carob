@@ -1,3 +1,4 @@
+#![feature(char_indices_offset)]
 #![allow(dead_code, rustdoc::private_intra_doc_links)]
 #![deny(
     // Documentation
@@ -17,7 +18,7 @@
 	rust_2018_idioms,
 	trivial_casts,
 	trivial_numeric_casts,
-	unstable_features,
+	//unstable_features,
 	unused_import_braces,
 	unused_qualifications,
 
