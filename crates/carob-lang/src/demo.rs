@@ -7,6 +7,7 @@ mod tests {
 	use crate::parse::Parser;
 	use crate::session::SingleSession;
 	use crate::source::{Origin, Source};
+	use crate::span::Span;
 	use crate::token::TokenKind;
 
 	#[test]
@@ -22,7 +23,7 @@ mod tests {
 
 		loop {
 			let token = lexer.next_token();
-			//println!("[{}] {:?}", token.span(), token.kind());
+			println!("[{}] {:?} `{}`", token.span(), token.kind(), token.span().index(&content));
 
 			if token.kind() == &TokenKind::Eof {
 				break;
@@ -45,6 +46,7 @@ mod tests {
 
 		let tokens = std::iter::from_fn(|| {
 			let token = lexer.next_token();
+			println!("[{}] {:?} `{}`", token.span(), token.kind(), token.span().index(&content));
 
 			if token.kind() == &TokenKind::Eof {
 				None
@@ -62,7 +64,7 @@ mod tests {
 		let start = SystemTime::now();
 
 		while let Some(_directive) = parser.next_directive() {
-			//println!("{:#?}", directive);
+			println!("{:#?}", _directive);
 		}
 
 		let parse_elapsed = start.elapsed().unwrap();

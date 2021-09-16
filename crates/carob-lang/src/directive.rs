@@ -1,61 +1,86 @@
-use crate::amount::UncheckedAmount;
-use crate::commodity::UncheckedCommodity;
-use crate::date::UncheckedDate;
 use crate::keyword::Keyword;
-use crate::metadata::Tag;
-use crate::path::UncheckedPath;
-use crate::payee::UncheckedPayee;
 use crate::span::ByteSpan;
+use crate::token::Token;
 use crate::transaction::Flag;
 
 macro_rules! directives {
-		(
-			$(
-				$( #[doc = $doc:literal] )*
-				$name:ident {
-					$(
-						$( #[doc = $attrdoc:literal] )*
-						$attrname:ident: $attrty:ty ,
-					)+
-				} $( : $keyword:path )? ,
-			)+
-		) => {
-			#[derive(Debug, Clone, PartialEq)]
-			pub enum DirectiveKind {
+	(
+		$(
+			$( #[doc = $doc:literal] )*
+			$name:ident {
 				$(
-					$( #[doc = $doc] )*
-					$name {
-						$(
-							$( #[doc = $attrdoc] )*
-							$attrname: $attrty ,
-						)+
-					},
+					$( #[doc = $attrdoc:literal] )*
+					$attrname:ident: $attrty:ty ,
 				)+
+			} $( : $keyword:path )? ,
+		)+
+	) => {
+		#[derive(Debug, Clone, PartialEq)]
+		pub enum DirectiveKind {
+			$(
+				$( #[doc = $doc] )*
+				$name {
+					$(
+						$( #[doc = $attrdoc] )*
+						$attrname: $attrty ,
+					)+
+				},
+			)+
+		}
+
+		impl DirectiveKind {
+			pub const fn name(&self) -> &'static str {
+				match self {
+					$( Self::$name { .. }  => stringify!($name) , )+
+				}
 			}
 
-			impl DirectiveKind {
-				pub const fn name(&self) -> &'static str {
-					match self {
-						$( Self::$name { .. }  => stringify!($name) , )+
-					}
-				}
-
-				pub const fn keyword(&self) -> Option<Keyword> {
-					match self {
-						$( Self::$name { .. }  =>  directives!(@key $( $keyword )? ) , )+
-					}
+			pub const fn keyword(&self) -> Option<Keyword> {
+				match self {
+					$( Self::$name { .. }  =>  directives!(@key $( $keyword )? ) , )+
 				}
 			}
+		}
 
-			impl ::std::fmt::Display for DirectiveKind {
-				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-					f.write_str(self.name())
-				}
+		impl ::std::fmt::Display for DirectiveKind {
+			fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+				f.write_str(self.name())
 			}
-		};
-		(@key $keyword:path) => { Some($keyword) };
-		(@key ) => { None };
+		}
+	};
+	(@key $keyword:path) => { Some($keyword) };
+	(@key ) => { None };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UncheckedDate {
+	pub(crate) year_sign: Option<Token>,
+	pub(crate) year: Token,
+	pub(crate) month: Token,
+	pub(crate) day: Token,
+}
+
+impl UncheckedDate {
+	pub const fn new(year_sign: Option<Token>, year: Token, month: Token, day: Token) -> Self {
+		Self { year_sign, year, month, day }
 	}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UncheckedPath(Vec<Token>);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NumberExpr {
+	Literal(Token),
+	Unary { sign: Token, number: Box<Self> },
+	Binary { left: Box<Self>, operand: Token, right: Box<Self> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UncheckedAmount {
+	pub(crate) value: NumberExpr,
+	pub(crate) commodity: Token,
+}
 
 // TODO: tag values with bytespan
 directives! {
@@ -63,8 +88,8 @@ directives! {
 	Open {
 		date: UncheckedDate,
 		account: UncheckedPath,
-		commodity_constraints: Vec<UncheckedCommodity>,
-		booking_method: Option<String>,
+		commodity_constraints: Vec<Token>,
+		booking_method: Option<Token>,
 	} : Keyword::Open,
 
 	/// `close`
@@ -76,7 +101,7 @@ directives! {
 	/// `commodity`
 	Commodity {
 		date: UncheckedDate,
-		commodity: UncheckedCommodity,
+		commodity: Token,
 	} : Keyword::Commodity,
 
 	/// postings of a Transaction
@@ -92,19 +117,19 @@ directives! {
 	Transaction {
 		date: UncheckedDate,
 		flag: Flag,
-		payee: Option<UncheckedPayee>,
-		description: Option<String>,
+		payee: Option<UncheckedPath>,
+		description: Option<Token>,
 		postings: Vec<Directive>,
 	} : Keyword::Transaction,
 
 	/// `pushtag`
 	PushTag {
-		tag: Tag,
+		tag: Token,
 	} : Keyword::PushTag,
 
 	/// `poptag`
 	PopTag {
-		tag: Tag,
+		tag: Token,
 	} : Keyword::PopTag,
 
 	/// `balance`
@@ -125,59 +150,59 @@ directives! {
 	Note {
 		date: UncheckedDate,
 		account: UncheckedPath,
-		description: String,
+		description: Token,
 	} : Keyword::Note,
 
 	/// `document`
 	Document {
 		date: UncheckedDate,
 		account: UncheckedPath,
-		document_path: String,
+		document_path: Token,
 	} : Keyword::Document,
 
 	/// `price`
 	Price {
 		date: UncheckedDate,
-		commodity: UncheckedCommodity,
+		commodity: Token,
 		price: UncheckedAmount,
 	} : Keyword::Price,
 
 	/// `event`
 	Event {
 		date: UncheckedDate,
-		name: String,
-		value: String,
+		name: Token,
+		value: Token,
 	} : Keyword::Event,
 
 	/// `query`
 	Query {
 		date: UncheckedDate,
-		name: String,
-		query: String,
+		name: Token,
+		query: Token,
 	} : Keyword::Query,
 
 	/// `custom`
 	Custom {
 		date: UncheckedDate,
-		typ: String,
+		typ: Token,
 		// TODO: Vec<Literal>
 	} : Keyword::Custom,
 
 	/// `option`
 	Option {
-		name: String,
-		value: String,
+		name: Token,
+		value: Token,
 	} : Keyword::Option,
 
 	/// `plugin`
 	Plugin {
-		name: String,
-		configuration: Option<String>,
+		name: Token,
+		configuration: Option<Token>,
 	} : Keyword::Plugin,
 
 	/// `include`
 	Include {
-		path: String,
+		path: Token,
 	} : Keyword::Include,
 }
 

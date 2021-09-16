@@ -143,7 +143,7 @@ impl<'a> Lexer<'a> {
 	}
 
 	fn lex_ident(&mut self, start: BytePos) -> Token {
-		self.cursor.consume_while(|c| char::is_alphanumeric(c) || c == '_' || c == '-');
+		self.cursor.consume_while(|c| char::is_alphanumeric(c) || char::is_ascii_punctuation(&c));
 
 		// Check if boolean
 		let content = &self.bytes[start.as_usize()..self.cursor.offset()];

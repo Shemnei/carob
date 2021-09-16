@@ -1,45 +1,45 @@
 use crate::span::ByteSpan;
 
 macro_rules! tokens {
-		(
+	(
+		$(
+			$( #[doc = $doc:literal] )*
+			$name:ident $( { $( $tyname:ident : $ty:ty )+ } )? $( = $symbol:literal )?,
+		)+
+	) => {
+		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+		pub enum TokenKind {
 			$(
-				$( #[doc = $doc:literal] )*
-				$name:ident $( { $( $tyname:ident : $ty:ty )+ } )? $( = $symbol:literal )?,
+				$( #[doc = $doc] )*
+				$name $( { $( $tyname : $ty )+ } )?,
 			)+
-		) => {
-			#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-			pub enum TokenKind {
-				$(
-					$( #[doc = $doc] )*
-					$name $( { $( $tyname : $ty )+ } )?,
-				)+
-			}
+		}
 
-			impl TokenKind {
-				pub const fn name(&self) -> &'static str {
-					#[allow(unused_variables)]
-					match self {
-						$( Self::$name $( { $( $tyname , )+ } )? => stringify!($name) , )+
-					}
-				}
-
-				pub const fn symbol(&self) -> Option<char> {
-					#[allow(unused_variables)]
-					match self {
-						$( Self::$name $( { $( $tyname , )+ } )? => tokens!(@nvl $( $symbol )? ) , )+
-					}
+		impl TokenKind {
+			pub const fn name(&self) -> &'static str {
+				#[allow(unused_variables)]
+				match self {
+					$( Self::$name $( { $( $tyname , )+ } )? => stringify!($name) , )+
 				}
 			}
 
-			impl ::std::fmt::Display for TokenKind {
-				fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-					f.write_str(self.name())
+			pub const fn symbol(&self) -> Option<char> {
+				#[allow(unused_variables)]
+				match self {
+					$( Self::$name $( { $( $tyname , )+ } )? => tokens!(@nvl $( $symbol )? ) , )+
 				}
 			}
-		};
-		(@nvl $symbol:literal) => { Some($symbol) };
-		(@nvl) => { None };
-	}
+		}
+
+		impl ::std::fmt::Display for TokenKind {
+			fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+				f.write_str(self.name())
+			}
+		}
+	};
+	(@nvl $symbol:literal) => { Some($symbol) };
+	(@nvl) => { None };
+}
 
 tokens! {
 	// Single byte tokens

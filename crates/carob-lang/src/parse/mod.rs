@@ -5,11 +5,9 @@ use std::fmt;
 use std::str::FromStr;
 
 use self::cursor::Cursor;
-use crate::date::UncheckedDate;
 use crate::diagnostic::Diagnostic;
-use crate::directive::{Directive, DirectiveKind};
+use crate::directive::{Directive, DirectiveKind, UncheckedDate};
 use crate::keyword::Keyword;
-use crate::metadata::Tag;
 use crate::session::{SingleDiagnostic, SingleLabel, SingleSession};
 use crate::span::{ByteSpan, Span as _};
 use crate::token::{LiteralKind, Token, TokenKind};
@@ -163,15 +161,15 @@ impl<'a> Parser<'a> {
 		}
 	}
 
-	fn opt_string(&mut self) -> Option<(ByteSpan, String)> {
-		let Token { span, .. } = self.opt_any(&[
+	fn opt_string(&mut self) -> Option<Token> {
+		let token = self.opt_any(&[
 			TokenKind::literal(LiteralKind::String { terminated: true }),
 			TokenKind::literal(LiteralKind::String { terminated: false }),
 		])?;
 
 		// TODO: decide what to do with unclosed strings
 
-		Some((span, span.index(&self.session.source).to_owned()))
+		Some(token)
 	}
 
 	fn expect(&mut self, kind: TokenKind) -> Result<Token> {
@@ -217,18 +215,18 @@ impl<'a> Parser<'a> {
 		}
 	}
 
-	fn expect_string(&mut self) -> Result<(ByteSpan, String)> {
-		let Token { span, .. } = self.expect_any(&[
+	fn expect_string(&mut self) -> Result<Token> {
+		let token = self.expect_any(&[
 			TokenKind::literal(LiteralKind::String { terminated: true }),
 			TokenKind::literal(LiteralKind::String { terminated: false }),
 		])?;
 
 		// TODO: decide what to do with unclosed strings
 
-		Ok((span, span.index(&self.session.source).to_owned()))
+		Ok(token)
 	}
 
-	fn expect_date(&mut self) -> Result<(ByteSpan, UncheckedDate)> {
+	fn expect_date(&mut self) -> Result<UncheckedDate> {
 		// TODO: check if whitespaces between tokens
 
 		fn date_diagnostic(
@@ -262,38 +260,24 @@ impl<'a> Parser<'a> {
 			])
 		}
 
-		let sign_token = self.opt_any(&[TokenKind::Hyphen, TokenKind::Plus]);
+		let year_sign_token = self.opt_any(&[TokenKind::Hyphen, TokenKind::Plus]);
 
 		let year_token =
 			self.expect(TokenKind::literal(LiteralKind::Integer)).map_err(|diagnostic| {
 				extend_date_diagnostic(
 					diagnostic,
 					"while trying to parse this as year",
-					sign_token.map(|token| *token.span()),
+					year_sign_token.map(|token| *token.span()),
 				)
 			})?;
 
-		let mut date_span = if let Some(sign_token) = sign_token {
+		let mut date_span = if let Some(sign_token) = year_sign_token {
 			sign_token.span().union(year_token.span())
 		} else {
 			*year_token.span()
 		};
 
-		let year = if year_token.span.len() >= 4 {
-			let year: i16 = self.try_parse(&year_token, "i16").map_err(|diagnostic| {
-				extend_date_diagnostic(
-					diagnostic,
-					"while trying to parse this as year",
-					Some(date_span),
-				)
-			})?;
-
-			if matches!(sign_token, Some(Token { kind: TokenKind::Hyphen, .. })) {
-				-year
-			} else {
-				year
-			}
-		} else {
+		if year_token.span.len() < 4 {
 			return Err(date_diagnostic(
 				*year_token.span(),
 				date_span,
@@ -327,15 +311,7 @@ impl<'a> Parser<'a> {
 
 		date_span = date_span.union(month_token.span());
 
-		let month = if month_token.span.len() == 2 {
-			self.try_parse(&month_token, "u8").map_err(|diagnostic| {
-				extend_date_diagnostic(
-					diagnostic,
-					"while trying to parse this as month",
-					Some(date_span),
-				)
-			})?
-		} else {
+		if month_token.span.len() != 2 {
 			return Err(date_diagnostic(
 				*month_token.span(),
 				date_span,
@@ -367,15 +343,7 @@ impl<'a> Parser<'a> {
 
 		date_span = date_span.union(day_token.span());
 
-		let day = if day_token.span.len() == 2 {
-			self.try_parse(&day_token, "u8").map_err(|diagnostic| {
-				extend_date_diagnostic(
-					diagnostic,
-					"while trying to parse this as day",
-					Some(date_span),
-				)
-			})?
-		} else {
+		if day_token.span.len() != 2 {
 			return Err(date_diagnostic(
 				*day_token.span(),
 				date_span,
@@ -384,7 +352,7 @@ impl<'a> Parser<'a> {
 			));
 		};
 
-		Ok((date_span, UncheckedDate::from_ymd(year, month, day)))
+		Ok(UncheckedDate::new(year_sign_token, year_token, month_token, day_token))
 	}
 
 	fn parse_top_level_directive(&mut self) -> Option<Result<Directive>> {
@@ -423,6 +391,8 @@ impl<'a> Parser<'a> {
 				}
 			}
 
+			// TODO: check that no tokens are left on same line
+
 			// No valid start of directive; Goto next start of line
 			self.skip_to_sol();
 		}
@@ -431,13 +401,12 @@ impl<'a> Parser<'a> {
 	}
 
 	// TODO: include span of date to reference it in diagnostics
-	fn parse_date_directive(
-		&mut self,
-		(_date_span, _date): (ByteSpan, UncheckedDate),
-	) -> Result<Directive> {
+	fn parse_date_directive(&mut self, date: UncheckedDate) -> Result<Directive> {
 		use crate::pos::BytePos;
 
-		let kind = DirectiveKind::PushTag { tag: Tag(String::from("a")) };
+		let kind = DirectiveKind::PushTag { tag: date.year };
+
+		// TODO: check that no tokens are left on same line
 		Ok(Directive::new(ByteSpan::new(BytePos(0), BytePos(0)), kind))
 	}
 
@@ -454,6 +423,7 @@ impl<'a> Parser<'a> {
 			// TODO: better error / no error?
 			_ => Err(Diagnostic::error()),
 		}
+		// TODO: check that no tokens are left on same line
 	}
 
 	fn parse_pushtag(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
@@ -461,18 +431,16 @@ impl<'a> Parser<'a> {
 
 		let mut directive_span = keyword_span;
 
-		let (tag_span, tag) = self.expect_string().map_err(|diagnostic| {
+		let tag_token = self.expect_string().map_err(|diagnostic| {
 			diagnostic.with_label(
 				SingleLabel::secondary((), directive_span)
 					.with_message("while trying to parse this pushtag directive"),
 			)
 		})?;
 
-		directive_span = directive_span.union(&tag_span);
+		directive_span = directive_span.union(tag_token.span());
 
-		let tag = Tag(tag);
-
-		Ok(Directive::new(directive_span, DirectiveKind::PushTag { tag }))
+		Ok(Directive::new(directive_span, DirectiveKind::PushTag { tag: tag_token }))
 	}
 
 	fn parse_poptag(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
@@ -480,18 +448,16 @@ impl<'a> Parser<'a> {
 
 		let mut directive_span = keyword_span;
 
-		let (tag_span, tag) = self.expect_string().map_err(|diagnostic| {
+		let tag_token = self.expect_string().map_err(|diagnostic| {
 			diagnostic.with_label(
 				SingleLabel::secondary((), directive_span)
 					.with_message("while trying to parse this poptag directive"),
 			)
 		})?;
 
-		directive_span = directive_span.union(&tag_span);
+		directive_span = directive_span.union(tag_token.span());
 
-		let tag = Tag(tag);
-
-		Ok(Directive::new(directive_span, DirectiveKind::PopTag { tag }))
+		Ok(Directive::new(directive_span, DirectiveKind::PopTag { tag: tag_token }))
 	}
 
 	fn parse_option(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
@@ -499,7 +465,7 @@ impl<'a> Parser<'a> {
 
 		let mut directive_span = keyword_span;
 
-		let (name_span, name) = self.expect_string().map_err(|diagnostic| {
+		let name_token = self.expect_string().map_err(|diagnostic| {
 			diagnostic
 				.expand_on_last_label(|label| {
 					label.with_message("while trying to parse this as option name")
@@ -510,9 +476,9 @@ impl<'a> Parser<'a> {
 				)
 		})?;
 
-		directive_span = directive_span.union(&name_span);
+		directive_span = directive_span.union(name_token.span());
 
-		let (value_span, value) = self.expect_string().map_err(|diagnostic| {
+		let value_token = self.expect_string().map_err(|diagnostic| {
 			diagnostic
 				.expand_on_last_label(|label| {
 					label.with_message("while trying to parse this as option value")
@@ -523,16 +489,19 @@ impl<'a> Parser<'a> {
 				)
 		})?;
 
-		directive_span = directive_span.union(&value_span);
+		directive_span = directive_span.union(value_token.span());
 
-		Ok(Directive::new(directive_span, DirectiveKind::Option { name, value }))
+		Ok(Directive::new(
+			directive_span,
+			DirectiveKind::Option { name: name_token, value: value_token },
+		))
 	}
 
 	fn parse_plugin(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
 		debug_assert_eq!(keyword, Keyword::Plugin);
 		let mut directive_span = keyword_span;
 
-		let (name_span, name) = self.expect_string().map_err(|diagnostic| {
+		let name_token = self.expect_string().map_err(|diagnostic| {
 			diagnostic
 				.expand_on_last_label(|label| {
 					label.with_message("while trying to parse this as plugin name")
@@ -543,16 +512,18 @@ impl<'a> Parser<'a> {
 				)
 		})?;
 
-		directive_span = directive_span.union(&name_span);
+		directive_span = directive_span.union(name_token.span());
 
-		let configuration = if let Some((configuration_span, configuration)) = self.opt_string() {
-			directive_span = directive_span.union(&configuration_span);
-			Some(configuration)
-		} else {
-			None
-		};
+		let configuration_token = self.opt_string();
 
-		Ok(Directive::new(directive_span, DirectiveKind::Plugin { name, configuration }))
+		if let Some(Token { span, .. }) = configuration_token {
+			directive_span = directive_span.union(&span);
+		}
+
+		Ok(Directive::new(
+			directive_span,
+			DirectiveKind::Plugin { name: name_token, configuration: configuration_token },
+		))
 	}
 
 	fn parse_include(&mut self, keyword_span: ByteSpan, keyword: Keyword) -> Result<Directive> {
@@ -560,16 +531,16 @@ impl<'a> Parser<'a> {
 
 		let mut directive_span = keyword_span;
 
-		let (path_span, path) = self.expect_string().map_err(|diagnostic| {
+		let path_token = self.expect_string().map_err(|diagnostic| {
 			diagnostic.with_label(
 				SingleLabel::secondary((), directive_span)
 					.with_message("while trying to parse this include directive"),
 			)
 		})?;
 
-		directive_span = directive_span.union(&path_span);
+		directive_span = directive_span.union(path_token.span());
 
-		Ok(Directive::new(directive_span, DirectiveKind::Include { path }))
+		Ok(Directive::new(directive_span, DirectiveKind::Include { path: path_token }))
 	}
 }
 

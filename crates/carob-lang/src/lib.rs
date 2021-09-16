@@ -29,7 +29,6 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg), feature(doc_alias))]
 
-// TODO: decide how "far" to go with unicode (e.g. accept different unicode digits / quotation marks)
 // TODO: make something like small_str
 // TODO: add literal enum with:
 //    Strings
@@ -44,10 +43,8 @@
 // TODO: be able to define decimal separator
 
 // FEATURE STOP
-// TODO: split into files
-// TODO: switch from byte cursor to char cursor for Lexer
-// TODO: Parser should emit Directives (statement)
 // TODO: There soulde also be types (e.g. date)
+// TODO: decide if SOL token should be removed
 
 pub(crate) mod diagnostic;
 pub(crate) mod directive;
@@ -252,97 +249,6 @@ pub(crate) mod util {
 				[b'\xe2', b'\x80', b'\xa8' | b'\xa9', ..] => Some(3),
 				_ => None,
 			}
-		}
-	}
-}
-
-mod date {
-	use std::fmt;
-
-	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-	pub struct UncheckedDate {
-		pub(crate) year: i16,
-		pub(crate) month: u8,
-		pub(crate) day: u8,
-	}
-
-	impl UncheckedDate {
-		pub const fn from_ymd(year: i16, month: u8, day: u8) -> Self {
-			Self { year, month, day }
-		}
-	}
-
-	impl fmt::Display for UncheckedDate {
-		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-			write!(f, "{}-{}-{}", self.year, self.month, self.day)
-		}
-	}
-}
-
-mod path {
-	use std::fmt;
-
-	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	pub struct UncheckedPath {
-		segments: Vec<String>,
-	}
-
-	impl fmt::Display for UncheckedPath {
-		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-			f.write_str(self.segments.join(":").as_str())
-		}
-	}
-}
-
-mod commodity {
-	use std::fmt;
-
-	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	pub struct UncheckedCommodity(String);
-
-	impl fmt::Display for UncheckedCommodity {
-		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-			f.write_str(&self.0)
-		}
-	}
-}
-
-mod payee {
-	use std::fmt;
-
-	use crate::path::UncheckedPath;
-
-	#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-	pub enum UncheckedPayee {
-		String(String),
-		Path(UncheckedPath),
-	}
-
-	impl fmt::Display for UncheckedPayee {
-		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-			match self {
-				Self::String(s) => f.write_str(s),
-				Self::Path(p) => fmt::Display::fmt(p, f),
-			}
-		}
-	}
-}
-
-mod amount {
-	use std::fmt;
-
-	use crate::commodity::UncheckedCommodity;
-
-	#[derive(Debug, Clone, PartialEq)]
-	pub struct UncheckedAmount {
-		// TODO: Use BigF/f64/i64 enum
-		value: f64,
-		commodity: UncheckedCommodity,
-	}
-
-	impl fmt::Display for UncheckedAmount {
-		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-			write!(f, "{} {}", self.value, self.commodity)
 		}
 	}
 }
