@@ -1,0 +1,255 @@
+mod cursor;
+
+use self::cursor::Cursor;
+use crate::pos::{BytePos, Pos as _};
+use crate::span::ByteSpan;
+use crate::token::{LiteralKind, Token, TokenKind};
+use crate::util::ascii;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Lexer<'a> {
+	bytes: &'a [u8],
+	cursor: Cursor<'a>,
+	emit_invisible: bool,
+}
+
+impl<'a> Lexer<'a> {
+	pub const fn new(bytes: &'a [u8]) -> Self {
+		Self { bytes, cursor: Cursor::new(bytes), emit_invisible: false }
+	}
+
+	pub fn from_bytes<B>(bytes: &'a B) -> Self
+	where
+		B: 'a + AsRef<[u8]>,
+	{
+		Self::new(bytes.as_ref())
+	}
+
+	pub fn next_token(&mut self) -> Token {
+		let start = self.cursor.byte_pos();
+
+		self.consume_whitespaces();
+
+		if self.emit_invisible && self.cursor.byte_pos() > start {
+			return self.emit_token(start, TokenKind::Whitespace);
+		}
+
+		let start = self.cursor.byte_pos();
+
+		// Check if there is a line comment next and if so consume until
+		// eol.
+		if matches!(self.cursor.first(), Some(b';')) {
+			self.cursor.consume_until_eol();
+			if self.emit_invisible {
+				return self.emit_token(start, TokenKind::Comment);
+			}
+		}
+
+		let start = self.cursor.byte_pos();
+
+		// Check eol here because in the `match` the first byte is already
+		// poped and thus the cursor cant detect any eol.
+		self.cursor.consume_while_eol();
+
+		if self.cursor.byte_pos() > start {
+			return self.emit_token(start, TokenKind::Eol);
+		}
+
+		// 1) Check 1 byte symbols
+		// 2) Check String start
+		// 3) Check Number start
+		// 5) Is literal
+		match (self.cursor.consume(), self.cursor.first()) {
+			(Some(b'('), _) => self.emit_token(start, TokenKind::LeftParen),
+			(Some(b')'), _) => self.emit_token(start, TokenKind::RightParen),
+			(Some(b'{'), _) => self.emit_token(start, TokenKind::LeftBrace),
+			(Some(b'}'), _) => self.emit_token(start, TokenKind::RightParen),
+			(Some(b','), _) => self.emit_token(start, TokenKind::Comma),
+			// TODO: Check if digit after that and if so parse as number
+			(Some(b'.'), _) => self.emit_token(start, TokenKind::Dot),
+			(Some(b'-'), _) => self.emit_token(start, TokenKind::Hyphen),
+			(Some(b'+'), _) => self.emit_token(start, TokenKind::Plus),
+			(Some(b':'), _) => self.emit_token(start, TokenKind::Colon),
+			(Some(b';'), _) => self.emit_token(start, TokenKind::Semicolon),
+			(Some(b'/'), _) => self.emit_token(start, TokenKind::Slash),
+			(Some(b'*'), _) => self.emit_token(start, TokenKind::Asterisk),
+			(Some(b'^'), _) => self.emit_token(start, TokenKind::Caret),
+			(Some(b'!'), _) => self.emit_token(start, TokenKind::ExclamationMark),
+			(Some(b'@'), _) => self.emit_token(start, TokenKind::AtSign),
+
+			// Number
+			(Some(b), _) if ascii::is_ascii_digit(b) => self.lex_number(start, b),
+
+			// String
+			(Some(b), _) if ascii::is_ascii_quotation_mark(b) => self.lex_string(start, b),
+
+			// Identifier
+			(Some(_), _) => self.lex_ident(start),
+
+			// Eof
+			(None, _) => self.emit_eof(start),
+		}
+	}
+
+	// [0-9]+(.[0-9]*)?([+-]e[0-9]+)
+	fn lex_number(&mut self, start: BytePos, first: u8) -> Token {
+		// e.g. 1_100,000.10e-10
+		// after e no more `.`
+
+		debug_assert!(ascii::is_ascii_digit(first));
+
+		let mut kind = LiteralKind::Integer;
+
+		let _ = self
+			.cursor
+			.consume_while(|b| ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b));
+
+		if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_decimal_separator(b)) {
+			kind = LiteralKind::Float;
+
+			let separator = self.cursor.consume();
+			debug_assert!(
+				matches!(separator, Some(b) if ascii::is_ascii_number_decimal_separator(b))
+			);
+
+			let _ = self
+				.cursor
+				.consume_while(|b| ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b));
+		}
+
+		if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_exponent(b))
+			|| matches!((self.cursor.first(), self.cursor.second()), (Some(a), Some(b)) if ascii::is_ascii_number_sign(a) && ascii::is_ascii_number_exponent(b))
+		{
+			// TODO: check that there is a digit after the exponent before consuming
+			if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign(b)) {
+				if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign_negative(b))
+				{
+					kind = LiteralKind::Float;
+				}
+
+				let sign = self.cursor.consume();
+				debug_assert!(matches!(sign, Some(b) if ascii::is_ascii_number_sign(b)));
+			}
+
+			let exponent = self.cursor.consume();
+			debug_assert!(matches!(exponent, Some(b) if ascii::is_ascii_number_exponent(b)));
+
+			let _ = self
+				.cursor
+				.consume_while(|b| ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b));
+		}
+
+		self.emit_token(start, TokenKind::literal(kind))
+	}
+
+	fn lex_string(&mut self, start: BytePos, first: u8) -> Token {
+		debug_assert!(ascii::is_ascii_quotation_mark(first));
+
+		let closing = ascii::get_closing_quotation_mark(first)
+			.unwrap_or_else(|| panic!("Found no closing quotation mark for `0x{:x}`", start));
+
+		let mut terminated = false;
+
+		while let Some(byte) = self.cursor.consume() {
+			if ascii::is_ascii_escape(byte) {
+				if self.cursor.consume().is_none() {
+					// Consume escaped byte. We dont care about utf-8 unicode
+					// as these bytes would always be than any ascii char.
+					break;
+				}
+			} else if byte == closing {
+				terminated = true;
+				break;
+			}
+		}
+
+		self.emit_token(start, TokenKind::literal(LiteralKind::String { terminated }))
+	}
+
+	fn lex_ident(&mut self, start: BytePos) -> Token {
+		self.cursor.consume_until_whitespace_eol();
+
+		// Check if boolean
+		let content = &self.bytes[start.as_usize()..self.cursor.pos()];
+
+		if content.eq_ignore_ascii_case(b"true") {
+			self.emit_token(start, TokenKind::literal(LiteralKind::Boolean { value: true }))
+		} else if content.eq_ignore_ascii_case(b"false") {
+			self.emit_token(start, TokenKind::literal(LiteralKind::Boolean { value: false }))
+		} else {
+			self.emit_token(start, TokenKind::Ident)
+		}
+	}
+
+	fn emit_token(&self, start: BytePos, kind: TokenKind) -> Token {
+		Token::new(ByteSpan::new(start, self.cursor.byte_pos()), kind)
+	}
+
+	fn emit_eof(&self, start: BytePos) -> Token {
+		self.emit_token(start, TokenKind::Eof)
+	}
+
+	fn pos(&self) -> BytePos {
+		self.cursor.byte_pos()
+	}
+
+	fn consume_whitespaces(&mut self) {
+		while self.cursor.consume_any_whitespace() {}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn consume_whitespaces() {
+		fn test_whitespace_char(c: char) {
+			let s = c.to_string();
+			let mut lexer = Lexer::from_bytes(&s);
+
+			lexer.consume_whitespaces();
+
+			assert_eq!(
+				lexer.pos(),
+				BytePos(s.len() as u32),
+				"Whitespace check for `{:?}` failed",
+				c
+			);
+		}
+
+		fn test_eol_char(c: char) {
+			let s = c.to_string();
+			let mut lexer = Lexer::from_bytes(&s);
+
+			lexer.consume_whitespaces();
+
+			assert_eq!(lexer.pos(), BytePos(0), "Eol check for `{:?}` failed", c);
+		}
+
+		#[rustfmt::skip]
+			let whitespace_content = "\t\u{00a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{202f}\u{205f}\u{3000}";
+
+		whitespace_content.chars().for_each(|c| test_whitespace_char(c));
+
+		#[rustfmt::skip]
+			let eol_content = "\n\u{000b}\u{000c}\r\u{0085}\u{2028}\u{2029}";
+		eol_content.chars().for_each(|c| test_eol_char(c));
+	}
+
+	#[test]
+	fn lex_string() {
+		let content = r#""Hello \" World""#;
+
+		let mut lexer = Lexer::new(&content.as_bytes()[1..]);
+
+		lexer.lex_string(BytePos(0), b'"');
+
+		assert_eq!(
+			lexer.pos(),
+			BytePos((content.len() - 1) as u32),
+			"String lex check for `{:?}` failed",
+			content
+		);
+	}
+}

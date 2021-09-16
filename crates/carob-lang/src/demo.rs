@@ -7,7 +7,6 @@ mod tests {
 	use crate::parse::Parser;
 	use crate::session::SingleSession;
 	use crate::source::{Origin, Source};
-	use crate::span::Span;
 	use crate::token::TokenKind;
 
 	#[test]
@@ -62,7 +61,7 @@ mod tests {
 
 		let start = SystemTime::now();
 
-		while let Some(directive) = parser.next_directive() {
+		while let Some(_directive) = parser.next_directive() {
 			//println!("{:#?}", directive);
 		}
 
