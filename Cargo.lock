@@ -5,7 +5,3 @@ version = 3
 [[package]]
 name = "carob-lang"
 version = "0.0.0"
-
-[[package]]
-name = "carob-unicode"
-version = "0.1.0"

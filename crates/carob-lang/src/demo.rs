@@ -22,7 +22,7 @@ mod tests {
 
 		loop {
 			let token = lexer.next_token();
-			//println!("[{}] {:?}", token.span(), token.kind());
+			println!("[{}] {:?}", token.span(), token.kind());
 
 			if token.kind() == &TokenKind::Eof {
 				break;

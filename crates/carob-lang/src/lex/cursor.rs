@@ -1,5 +1,39 @@
+use std::str::Chars;
+
 use crate::pos::{BytePos, Pos as _};
 use crate::util::slice;
+
+pub struct CharCursor<'a, 'b> {
+	init_len: usize,
+	cursor: &'b mut Cursor<'a>,
+	chars: Chars<'a>,
+}
+
+impl<'a, 'b> CharCursor<'a, 'b> {
+	pub fn consume_while<F>(&mut self, mut f: F) -> bool
+	where
+		F: FnMut(char) -> bool,
+	{
+		while let Some(c) = self.chars.clone().next() {
+			if f(c) {
+				let _ = self.chars.next().expect("Cursor failed to consume a valid byte");
+			} else {
+				return false;
+			}
+		}
+
+		true
+	}
+}
+
+impl<'a, 'b> Drop for CharCursor<'a, 'b> {
+	fn drop(&mut self) {
+		let s = self.chars.as_str();
+
+		self.cursor.pos += self.init_len - s.len();
+		self.cursor.bytes = s.as_bytes();
+	}
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Cursor<'a> {
@@ -25,7 +59,12 @@ impl<'a> Cursor<'a> {
 	}
 
 	pub fn third(&self) -> Option<u8> {
-		self.nth(1)
+		self.nth(2)
+	}
+
+	pub fn chars(&mut self) -> CharCursor<'a, '_> {
+		let chars = unsafe { std::str::from_utf8_unchecked(self.bytes).chars() };
+		CharCursor { init_len: self.bytes.len(), cursor: self, chars }
 	}
 
 	pub fn advance(&mut self, amount: usize) {

@@ -117,22 +117,19 @@ impl<'a> Lexer<'a> {
 				.consume_while(|b| ascii::is_ascii_digit(b) || ascii::is_ascii_number_ignore(b));
 		}
 
-		if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_exponent(b))
-			|| matches!((self.cursor.first(), self.cursor.second()), (Some(a), Some(b)) if ascii::is_ascii_number_sign(a) && ascii::is_ascii_number_exponent(b))
-		{
-			// TODO: check that there is a digit after the exponent before consuming
-			if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign(b)) {
-				if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign_negative(b))
-				{
-					kind = LiteralKind::Float;
-				}
-
-				let sign = self.cursor.consume();
-				debug_assert!(matches!(sign, Some(b) if ascii::is_ascii_number_sign(b)));
-			}
-
+		if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_exponent(b)) {
 			let exponent = self.cursor.consume();
 			debug_assert!(matches!(exponent, Some(b) if ascii::is_ascii_number_exponent(b)));
+
+			// TODO: check that there is a digit after the exponent before consuming
+			if matches!(self.cursor.first(), Some(b) if ascii::is_ascii_number_sign(b)) {
+				let sign = self.cursor.consume();
+				debug_assert!(matches!(sign, Some(b) if ascii::is_ascii_number_sign(b)));
+
+				if matches!(sign, Some(b) if ascii::is_ascii_number_sign_negative(b)) {
+					kind = LiteralKind::Float;
+				}
+			}
 
 			let _ = self
 				.cursor
@@ -167,7 +164,11 @@ impl<'a> Lexer<'a> {
 	}
 
 	fn lex_ident(&mut self, start: BytePos) -> Token {
-		self.cursor.consume_until_whitespace_eol();
+		{
+			let mut chars = self.cursor.chars();
+
+			chars.consume_while(|c| char::is_alphanumeric(c) || c == '_');
+		}
 
 		// Check if boolean
 		let content = &self.bytes[start.as_usize()..self.cursor.pos()];
